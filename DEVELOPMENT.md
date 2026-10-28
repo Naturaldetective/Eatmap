@@ -1,0 +1,467 @@
+# 「吃图 EatMap」开发手册
+
+> 一个纯前端的「美食/游玩地图」应用：导入小红书或微信公众号视频链接 → 自动识别城市并分类（吃 / 玩）→ 在地图上按城市展示符号，点击跳转原视频 → 根据各城市导入的视频数量排序，推荐游玩城市。
+>
+> 部署：Vercel（纯静态站点）；数据：全部存放在浏览器 IndexedDB，**无后端、无服务器数据库**。
+
+---
+
+## 1. 产品概述
+
+### 1.1 核心用户流程
+
+```
+粘贴链接（小红书 / 微信公众号视频）
+        │
+        ▼
+解析器提取标题 + 正文/标签文本
+        │
+        ▼
+城市识别（文本 → 城市 → 经纬度坐标）
+        │
+        ▼
+视频分类（吃 / 玩 / 待定）
+        │
+        ▼
+写入 IndexedDB
+        │
+        ▼
+地图渲染城市符号（数量越多，符号越大/越醒目）
+点击符号 → 侧栏列出该城市视频 → 点击跳转原链接
+        │
+        ▼
+推荐榜单：按「好吃的数量」降序排列城市
+```
+
+### 1.2 功能清单
+
+| 编号 | 功能 | 说明 | 优先级 |
+|---|---|---|---|
+| F1 | 链接导入 | 支持单条粘贴 + 批量（每行一条），识别 `xiaohongshu.com` / `mp.weixin.qq.com` 链接 | P0 |
+| F2 | 城市自动关联 | 从标题/正文/标签中识别城市名，定位到地图坐标 | P0 |
+| F3 | 视频自动分类 | 判定「吃的视频」或「游玩的视频」，低置信度时允许人工修改 | P0 |
+| F4 | 地图展示 | 城市位置放符号（🍜=吃 / 📍=玩 或图标+数量气泡），点击符号弹出该城市视频列表，可跳转原链接 | P0 |
+| F5 | 城市推荐排序 | 侧栏/榜单按城市「好吃的数量」降序推荐游玩城市 | P0 |
+| F6 | 数据管理 | 支持编辑（改城市/改分类/删除）、导出 JSON、导入 JSON 备份 | P0 |
+| F7 | 筛选 | 按分类（吃/玩）、城市、关键词筛选地图上的点 | P1 |
+| F8 | 手动兜底 | 解析失败/城市识别不出时，手动选择城市与分类后保存 | P1 |
+| F9 | 图片封面 | 视频封面缩略图展示（若可抓到） | P2 |
+
+### 1.3 明确的设计约束（先说清楚，避免后期返工）
+
+1. **数据只在浏览器本地**：IndexedDB 绑定「域名 + 浏览器 + 浏览器用户配置」，换设备/换浏览器/清缓存即丢失。因此 F6 的导出/导入 JSON 是**必须**做的备份通道，不是可选功能。
+2. **无服务端部署**：项目本体是纯静态站。但浏览器里 fetch 拿不到小红书正文（§4.3），所以抓取那一跳可以跑在
+   **用户本机**的一个中转上（§4.5，`npm run relay`，只绑 127.0.0.1、不存任何数据、可不用）。它不是服务，也不改变「数据只在本地」这条约束。
+3. **不存储视频本身**：只存链接 URL + 元信息，点击跳转到原平台，无版权与存储压力。
+
+---
+
+## 2. 技术选型
+
+| 领域 | 选型 | 理由 |
+|---|---|---|
+| 框架 | React 19 + TypeScript + Vite | 生态成熟，Vite 构建产物纯静态，天然适配 Vercel |
+| 地图 | Leaflet + `react-leaflet`，底图用高德瓦片（GCJ-02） | 免费无需 token（对比 Mapbox/Google 需注册）；高德瓦片在国内网络可用；中国城市坐标统一用高德/腾讯体系的 GCJ-02，避免坐标偏移 |
+| 本地数据库 | `idb`（IndexedDB 的轻量 Promise 封装） | 数据量目标 <1万条，IndexedDB 完全够用；localStorage 5MB 限制且是同步 API，不选 |
+| UI 组件 | Tailwind CSS + 少量自绘组件（或 shadcn/ui） | 保持轻量 |
+| 城市数据 | 内置 `cities.json`（743 条地级市+县级市，含别名），由 DataV.GeoAtlas 权威区划数据生成（见 §5.1）| 无后端也能离线完成「城市名→坐标」转换 |
+| 视频分类 | 规则 + 词频打分（纯前端，见 §5） | 不上大模型：无后端、零成本、可解释、可人工纠正 |
+| 跨域中转 | 无头渲染中转 `r.jina.ai`（主）+ 公共 CORS 代理（公众号兜底），均不可用时降级为分享文案/页签取词/手动录入（见 §4.3） | 解决浏览器跨域，依旧零后端（不自己养服务） |
+| 部署 | Vercel（Static 项目，`vercel.json` SPA rewrite） | 用户指定 |
+
+> ⚠️ 不用 AMap/百度地图 JS SDK 的原因：需要开发者 key、配额管理，且 Leaflet + 高德瓦片已满足「打点 + 点击」的全部需求。若后续要行政区边界、POI 搜索再引入高德 Web 服务 API。
+
+---
+
+## 3. 数据模型（IndexedDB）
+
+数据库名：`eatmap`，版本 `1`。由 `src/db/schema.ts` 集中管理，**每次改表结构必须升 version 并写 `upgrade` 迁移**。
+
+### 3.1 `videos`（主表：导入的视频）
+
+```ts
+interface VideoRecord {
+  id: string;              // crypto.randomUUID()
+  url: string;             // 原始链接（唯一索引，重复导入时提示）
+  platform: 'xiaohongshu' | 'wechat';
+  title: string;           // 解析出的标题，解析失败时为空、可手动补
+  desc?: string;           // 正文摘要/标签文本（分类与城市识别的依据）
+  cover?: string;          // 封面图 URL（P2，可空）
+  category: 'food' | 'travel' | 'unknown';   // 吃 / 玩 / 待定
+  categorySource: 'auto' | 'manual';         // 分类来源，manual 后不再被自动覆盖
+  cityCode: string;        // 关联城市 → cities.code，识别失败为 'unknown'
+  parsedAt: number;        // 时间戳
+  note?: string;           // 用户备注
+}
+// 索引：url(unique), cityCode, category, parsedAt
+```
+
+### 3.2 `cities`（城市静态表，启动时从内置 cities.json 灌入）
+
+```ts
+interface CityRecord {
+  code: string;            // 高德 adcode，如 '310000'
+  name: string;            // '上海'
+  province: string;        // '上海市'
+  lng: number; lat: number;// GCJ-02 坐标
+  aliases: string[];       // 别名/俗称，如 ['魔都', '申城']
+}
+```
+
+### 3.3 派生数据（不落库，实时聚合）
+
+- 城市计数：`GROUP BY cityCode` → 每城 `{foodCount, travelCount, total}`，用 `idb` 的索引遍历在内存聚合（万级以内 <10ms）。
+- 推荐排序：`score = foodCount * 3 + travelCount * 1`（「吃的数量越多越靠前」为主权重，游玩数量为副权重；系数做成常量可调，见 §6）。
+
+### 3.4 导出/导入格式
+
+```json
+{ "app": "eatmap", "version": 1, "exportedAt": 1730000000000, "videos": [ ...VideoRecord ] }
+```
+导入时按 `url` 去重合并（已有则跳过或覆盖，弹窗二选一）。cities 是静态数据，不需要导出。
+
+---
+
+## 4. 链接导入与解析（F1/F2 的核心难点）
+
+### 4.1 链接识别
+
+| 平台 | 合法链接形态 |
+|---|---|
+| 小红书 | `https://www.xiaohongshu.com/explore/{noteId}?xsec_token=...`（**抓取必须带 token**，§4.3）、`https://xhslink.com/{short}`（短链需跟随重定向） |
+| 微信公众号 | `https://mp.weixin.qq.com/s/{token}`、`.../s?__biz=...` |
+
+正则见 `src/ingest/parse.ts` 的 `PLATFORM_PATTERNS`。不支持的链接直接拒绝并提示。
+
+### 4.2 提取目标
+
+从页面 HTML 里尽可能拿到：`title`、`desc/正文前 N 字`、`标签(#话题#)`、`cover`。
+- 小红书：**渲染后 DOM 优先**（`#detail-title`、`#detail-desc`、`#detail-tag-id .tag`，正文比截断的 meta 完整），
+  其次 `og:title` / `og:description` / `og:image`，兜底正则抠 `"title"` / `__INITIAL_STATE__`。
+  入库标题一律剥掉「 - 小红书」站点后缀（`cleanTitle`）。
+- 公众号：`<meta property="og:title">`、`og:description`，兜底 `msg_title` / `#activity-name` 文本。
+
+### 4.3 跨域对策（无后端的现实方案，按顺序降级）
+
+1. **直连尝试** `fetch(url)` —— 少数环境可用，作为第一试。
+2. **自托管中转服务（当前主力通道，§4.5）**：本机 `npm run relay` 起 `127.0.0.1:8787`，vite 把 `/api/fetch` 代理过去，
+   前端仍按同源地址调用。它不回 HTML 而是回**结构化 JSON**（`FetchHtmlResult.meta`）：正文未截断、
+   话题已归一（`#丹东美食[话题]#` → `#丹东美食#`，识别因此走 `tag` 来源而不是 `desc`）、封面是真图。
+3. **`https://r.jina.ai/{url}` + `x-return-format: html`**：第三方无头渲染中转，
+   CORS 开放、境内可达（实测 1~3s）、无需 API key（匿名额度约 20 次/分钟，故 `RATE_LIMIT_MS=1200` 节流）。
+   回传的是渲染后的 DOM，所以 §4.2 的 `#detail-*` 选择器直接命中；但只能拿到截断的 og 与站点 logo 当封面。
+4. **公共 CORS 代理**（仅作公众号兜底）：`api.allorigins.win/raw`（实测对小红书直接 408）、
+   `api.codetabs.com/v1/proxy`（境内不可达）。列表在 `src/ingest/proxies.ts`，可增删排序、每通道自带超时与失败切换。
+5. **分享文案免网络解析**：小红书 App 复制的分享文案自带「标题 + 链接 + #话题」，`parseShareText()` 直接解析出元数据并进识别，**完全不走抓取**。
+6. **页签取词（一次一条）**：中转失效时展开助手 —— `buildPickScript()` 生成的脚本在**已打开的笔记页签** Console 执行，
+   读已渲染 DOM（`#detail-title` / `#detail-desc` / 话题）并 `copy()` 回传 JSON，粘回导入页写入。
+   实测不能改成「脚本里批量 fetch 多条」：同源 `fetch()` 别的笔记时小红书只回 48KB 的 SPA 壳（无 og、无正文），
+   真因是 fetch 必带禁止头 `Sec-Fetch-Dest: empty`（JS 改不了）且会自动带上登录 cookie，见下方第二次更正；
+   批量请走 §4.5 的中转服务，或 §4.3-5 的分享文案粘贴（`parsePickList()` 仍支持一次粘多条取词结果）。
+7. **手动录入（兜底）**：以上都不行时用户自己填标题+描述，系统照常识别。
+
+> ⚠️ **M6 结论的第一次更正（2026-10 复测）**：原判定「小红书对匿名请求 302 到登录页、任何代理都拿不到正文」**是错的**，
+> 根因在我们自己：`normalizeUrl()` 为去重把 `xsec_token` 剥掉后再去抓，而小红书**正是用这个 token 给分享链放行**。
+> 实测（未登录浏览器）：带 token 的 `/explore/{id}` 返回 200，`og:title`、`#detail-desc`、话题、封面齐全；
+> 不带 token 才被打到「小红书 - 你访问的页面不见了」（302 → `/404?source=/404/sec_xxx`）。
+> 因此规则改为：**抓取用原地址（`Row.fetchUrl`，含 token），入库/去重用规范地址（`Row.url`，已去 token）**，
+> 两者由 `splitLinks()` 一次产出；token 有有效期，所以**不入库**，只在本次会话的行里存活。
+> 另：`corsproxy.io` 需付费 key（401），已从通道列表移除；「登录墙不可绕过」的说法作废，
+> 但第三方中转仍是外部依赖，故 §4.3-5/6/7 三条免抓取路径继续保留为兜底。
+>
+> ⚠️ **第二次更正（同日，做中转时实测）**：第一次更正之后又判定「`xsec_source=app_share` 的 token 在 web 端强制登录、
+> 只能收 pc_share」，**同样是误判** —— ImportPage 当时据此对 app_share 链接提前判失败（白白扔掉能成功的链接）。
+> 拿同一篇笔记的两条链分别测：pc_share 与 app_share 经中转都返回 200 + 全文，真正的门槛是**请求头三件套**：
+> 缺 `Accept: text/html,…` 或缺 `Accept-Language: zh-CN,zh;q=0.9` 才 302 到 `/login?redirectPath=…`（36KB 壳）。
+> 与 token 来自哪个端无关，所以早退已删除，`shareSource()` 降级为纯诊断信息。另两条硬边界（都实测过，别再重试）：
+> **浏览器内的 `fetch` 拿不到正文**（同源也不行，`Sec-Fetch-Dest: empty` 是禁止头）；
+> **Node 的 `global fetch`（undici）也拿不到**（同一组头只回 36KB 壳），只有 `node:https` 原生请求给出 70KB 正文 ——
+> 差别在请求指纹（undici 把 header 名全小写、顺序固定），细节见 §4.5。
+
+### 4.4 重复导入
+
+按 `url` 唯一索引检测；重复时提示「已存在，跳过 / 覆盖」。短链先解析成长链再比对。
+
+### 4.5 自托管中转服务（`server/` + `scripts/relay.mjs`）
+
+「像不像真实导航」是服务端判的，而浏览器发出的请求一定带着改不了的禁止头（§4.3 第二次更正），
+所以这一跳必须挪到浏览器外面：
+
+```
+浏览器 ──/api/fetch?url=<带 token 原链>──▶ vite proxy ──▶ 127.0.0.1:8787 ──node:https──▶ 小红书
+                                                              ◀── JSON {ok,platform,status,finalUrl,meta}
+```
+
+三个文件，边界刻意切开：
+
+| 文件 | 职责 | 为什么这么切 |
+|---|---|---|
+| `server/relayCore.ts` | 纯逻辑：域名白名单、注入三头、`__INITIAL_STATE__` 解析、退化到 og / `msg_title`、HTTP 请求与响应组装 | 不 import 任何 node 模块，所以能在 vitest 里用 stub 传输层单测（`server/relayCore.test.ts`，14 条） |
+| `server/relayNode.ts` | 传输层：`node:https` 原生请求 + 手动跟随重定向 | 换成 `global fetch` 就取不到正文，文件头已钉死这条注释 |
+| `scripts/relay.mjs` | 入口：`npm run relay`，只绑 `127.0.0.1:8787` | Node 26 能直接 import `.ts`（原生 type stripping，只允许可擦除语法），无需构建步骤 |
+
+安全与隐私约束（每条都有测试兜着）：
+
+- **目标域名白名单**（`www.xiaohongshu.com` / `xhslink.com` / `mp.weixin.qq.com`，仅 http(s)），白名单外一律 400 且**不发出请求** ——
+  否则本机服务就成了开放代理；配合只绑 127.0.0.1 才敢常开。
+- **重定向每一跳重新校验**白名单（防 SSRF 跳去 `169.254.169.254` / `127.0.0.1:8080`）。
+- 响应 `Cache-Control: no-store`：`xsec_token` 是凭证，不能被留在本机缓存里。
+- 日志只打 `host + pathname`，绝不落 token。
+- `Access-Control-Allow-Origin` 默认 `*`（本机自用）；设 `RELAY_ALLOWED_ORIGINS` 后精确回源 + `Vary: Origin`。
+
+前端侧（`src/ingest/relay.ts`）地址优先级：导入页手填（localStorage）> `VITE_RELAY_URL` > 默认 `/api/fetch`。
+`RelayBar` 拿一条不存在的白名单地址探活，200/400/502 都算「服务活着」（绿灯），只有连不通才红。
+封面域 `sns-webpic-qc.xhscdn.com` 实测无防盗链（带不带 Referer 都 200），但站内给的是 `http://`，中转已升成 `https://`，否则被混合内容拦截。
+
+> 部署版（Vercel `api/fetch.ts`）**尚未做**：得先把 `vercel.json` 的 SPA rewrite 改成 `/((?!api/).*)`，
+> 否则 `/api/*` 会被吞掉回 `index.html`；且机房出口 IP 会不会被小红书风控也还没验证。
+
+---
+
+## 5. 城市识别与视频分类
+
+### 5.1 城市识别（`src/ingest/geo.ts`）
+
+策略：**文本匹配 + 层级优先 + 消歧**。
+
+1. 清洗文本：`title + desc + 标签` 拼接。
+2. 用 `cities.json`（**743 条：全部 369 个地级单位 + 374 个县级市 + 海南省直辖县**，含别名）做匹配：
+   - 全量匹配：`成都会` → 命中「成都」；
+   - 别名匹配：`成都` ⊂ aliases？→ 支持「春城」→昆明 这类；
+   - 防误匹配：单字/双字常见词（如「海口」「丹东」中的「海」）→ 匹配时要求城市名前后不是干扰字符，长名优先（先试「哈尔滨」，避免被「尔滨」之类噪音干扰）；
+   - **通名上下文黑名单**（`geo.ts` 的 `FALSE_CONTEXT`）：地名嵌在通名里时不是地名 —— 「鸭绿江的**入海口**」≠ 海南海口。
+     只按「前一个字」判定（海口前面是入/出时不命中）而不做整词遮蔽，以免误伤「梅河口 / 老河口」这类真地名。
+     这里是持续迭代处：新的误命中样本加一条词表就行，不要改匹配算法。
+3. 命中多个城市时（如「成都绕不了一圈」标题里还有「重庆」）：
+   - 优先 `#话题#` 标签里的城市；
+   - 其次标题中出现位置最靠前的；
+   - 仍无法确定 → `cityCode='unknown'`，进入人工选择（P1 列表页支持批量补城市）。
+4. 识别结果记录 `geoConfidence`（0~1），<0.6 的在 UI 上标黄提示复核。**歧义只在同级证据之间算数**：
+   话题与标题互相竞争才是真二义；正文里顺带出现的地名不会把话题/标题级的结论拉进标黄区
+   （候选列表里仍然全部列出，人工复核时看得到）。结论本身来自正文时，同级竞争照旧全算。
+   打分规则：
+   - `#话题#`：同级唯一 0.9 / 同级多城 0.8；
+   - 标题：标准名同级唯一 0.85 / 别名同级唯一 0.7 / 同级多城 0.55；
+   - **正文（desc）：不管标准名还是别名、不管唯一还是多城，最高只给 0.55** —— 正文里顺带提到的
+     城市不足以当归属结论，一律标黄交人工复核。
+
+#### 城市库数据来源与再生成（M6 扩库）
+
+早期只手写了 68 城，**缺城会引发连锁误判**：标题里的「丹东」不在库里被无声忽略，
+识别就退到正文里顺带提到的「海口」，当时还给到 0.7 的自信分数（高于 0.6 不标黄）。
+扩库到 743 城后漏城概率大降，但正文来源本身仍不可信，故已把 desc 上限压到 0.55（一律标黄），
+该行为由 `src/ingest/geo.test.ts` 「正文唯一命中标准名 → 仍 <0.6 强制复核」钉住。
+
+同一个样本还暴露了第二个问题：中转取回全文后该笔记的话题已归一成 `#丹东美食#`（应为 0.9 不标黄），
+却被正文里的「鸭绿江的**入海口**」误算出一个海口当竞争城市、一路压到 0.55。因此加了
+`FALSE_CONTEXT` 通名黑名单 + 「歧义只算同级」两条规则（上面的规则 2 与 4），
+由 `geo.test.ts` 「通名上下文不算地名 / 话题结论不被正文顺带提到的城市拖黄」
+与 `geoData.test.ts` 「但同级（标题 vs 标题）真二义仍必须标黄」钉住。
+
+- 数据源：阿里 DataV.GeoAtlas `https://geo.datav.aliyun.com/areas_v3/bound/{adcode}_full.json`
+  （CORS 开放，`properties.adcode/name/centroid` 即权威区划码 + 真实中心坐标；
+  部分城市 `centroid` 为空需回退 `center`，如无锡；台湾省文件 404，暂不收录）。
+- 采集：`node scripts/collect-cities.mjs` 起本地端口，浏览器内 fetch 全部区划后 POST 落盘
+  （数据不过对话，且避开 curl）。
+- 生成：`node scripts/build-cities.mjs` 读 `scripts/.cities_raw.json` + 旧精修表，输出 `src/data/cities.json`。规则：
+  1. 官方全称 → 常用简称（石家庄市→石家庄；自治州/盟/地区走显式简称表，算法截「族」不可靠）；
+  2. **简称与下辖县级市重名时，地级单位加后缀**：大理市=`大理`、大理白族自治州=`大理州`（否则「大理」二义）；
+  3. **名称是常用词的改用带后缀形式**：合作/东方/同仁/乌苏/龙井 → `X市`，
+     避免「品牌合作」「龙井虾仁」「乌苏啤酒」被当成城市；
+  4. 别名不得与任何城市简称重名（自动剔除，修正了旧数据里「凤城」误挂清远的问题）；
+  5. 旧表的精修别名按 code 合并保留（成都→蓉城、上海→魔都等）。
+- 回归测试：`src/ingest/geoData.test.ts` 直接跑发布数据，守住「同词不多城」、县级市可识别、
+  标题城市优于正文提及、常用词不误命中等约束。改城市库后必跑。
+
+### 5.2 视频分类：吃 or 玩（`src/ingest/classify.ts`）
+
+纯前端打分制规则分类器，**输出 `{category, confidence, hits}`**，hits 用于 UI 展示「为什么这么判」。
+
+**词表**（`src/ingest/lexicon.ts`，初始版人工整理，后续按误判样本迭代）：
+
+```
+food 强词（权重3）：探店、美食、好吃、餐厅、饭店、小吃、烧烤、火锅、奶茶、咖啡、
+                   面馆、早餐、夜宵、人均、菜单、点单、招牌菜、xx店、苍蝇馆子…
+food 弱词（权重1）：吃、喝、味道、排队、性价比、碳水、辣、甜…
+travel 强词（权重3）：景点、景区、攻略、打卡地、博物馆、公园、古镇、雪山、徒步、
+                     自驾、住宿、民宿、酒店、门票、路线、行程、拍照、出片…
+travel 弱词（权重1）：玩、逛、看、风景、周末、假期、citywalk…
+```
+
+**判定逻辑**：
+1. 标题（×2 加权）+ 正文 + 标签逐词扫描，累计 `foodScore / travelScore`。
+2. `score > 0` 的一侧且分差 ≥2 → 判胜；分差为 0/1 或全 0 → `unknown`（UI 标灰，等待人工选）。
+3. 特殊规则：food 与 travel 同现且都很高 → 允许归类为「吃」优先（产品定位是「好吃的地图」，可配置）。
+4. 人工修改后 `categorySource='manual'`，重新解析/编辑时不再自动覆盖。
+
+> 词表命中示例会在卡片上以 tooltip 展示（如「命中：探店(3)、火锅(3) → 吃」），保证可解释性，方便你训练词表。
+
+---
+
+## 6. 地图与推荐（F4/F5）
+
+### 6.1 地图页（主页）
+
+- Leaflet 地图，中国视角初始（中心 ~[104, 35]，zoom 4.5），底图高德街道瓦片：
+  `https://webrd0{1-4}.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=8&x={x}&y={y}&z={z}`
+- 每个有数据城市一个 `Marker`，用自定义 `divIcon`：
+  - 主色由 `bubbleKind()` 决定：吃多→焦糖（`--color-food`）、玩多→松绿（`--color-travel`）、相当→对角硬分界双色；
+    气泡内**只放条数、不放 emoji**（颜色即语义，图例写在控制面板底部）；
+  - 尺寸 `size = 24 + log2(total)*8`，上限 64px；实心纯色 + 2px 白环 + 一层薄投影，hover 只做 `translateY(-1px) scale(1.06)`。
+- 底图统一加 `.map-tiles`（`saturate(.62) contrast(.9) brightness(1.03)`）降饱和，让地图退到背景层、气泡成为唯一焦点；
+  缩放控件移到左下（`zoomControl={false}` + `<ZoomControl position="bottomleft" />`），避开左上控制面板。
+- 点击气泡 → 打开右侧抽屉（Drawer）：该城市视频列表（封面缩略图 + 标题 + 分类色点 + 录入日期），整卡可点新标签打开原视频。
+- 左上**单一控制面板**（筛选分段 / 城市搜索 / 图例三段，内部 1px 线分区），不拆成多个漂浮胶囊。
+
+### 6.2 推荐榜单页
+
+- 顶部一行表头式说明（`kd-label`）把「列」的含义讲清楚；每行：序号 + 城市名/省 + 吃/玩计数（色点）+ 得分 + 3px 单色相对得分细条 + 右侧箭头（跳地图并飞至该城市）。
+- 前三名只把序号染成焦糖色，不用奖牌 emoji。
+- 前端实时聚合，无缓存需求；数据量 <1万条无需虚拟滚动。
+
+### 6.3 导入页
+
+- 大 textarea：每行一条链接，粘贴即解析，逐行显示状态机：
+  `排队 → 抓取中 → 成功(展示 城市/分类 预览) / 失败(可重试/转手动)`。
+- 顶部「中转服务」状态条（`RelayBar`，§4.5）：绿/红灯 + 探活耗时 + 当前地址，可直接填已部署的中转地址（存 localStorage）。
+- 解析完成的行允许就地微调（下拉改城市、切分类），确认后入库。
+- 低置信度用 `.kd-low`（暗金描边 + 米黄底 + `alert` 细线图标），不用 tailwind 亮 amber 粗边。
+
+### 6.4 视觉规范（M7 定稿：可爱但不幼稚）
+
+第一版走「马卡龙色 + emoji 图标 + 描边贴纸」，实测观感偏幼稚，已整体重做。
+当前规则已落在 `src/index.css` 的 `@theme` 与 `.kd-*` 类里，**后续新增界面必须遵守**：
+
+| 维度 | 现行规则 | 已废弃的做法 |
+| --- | --- | --- |
+| 颜色 | 中性纸墨承担 95%（`canvas/surface/surface-2`、`ink/ink-2/ink-3`、`line/line-2`）；彩色**只有** `food`（焦糖 #d9480f）与 `travel`（松绿 #0f7b6c）两个语义色，`warn/danger` 仅用于状态 | peach/bubblegum/mint/sky/butter 五色平铺 |
+| 图标 | `src/ui/Icon.tsx` 细线图标（24 格画布、1.7 描边、round cap），可爱来自圆头线条 | 用 emoji 当图标（跨平台不一致，且是廉价感第一来源） |
+| 圆角/描边 | 卡片 14px、按钮/输入 9px、chip 6px，圆形只给气泡与色点；边框统一 1px | 万物 9999px 胶囊 + 2px 米色描边 |
+| 阴影 | 只两档：`shadow-soft`（贴在纸上）、`shadow-float`（面板/抽屉） | 厚投影 + inset 内阴影 |
+| 字体 | 正文用规整黑体；标题 600、正文 400/500、次要 12px `ink-3`，数字一律 `tabular-nums` | 全站 700/800（没有轻重对比就没有高级感）、正文用圆体 |
+| 渐变 | 只允许出现在品牌字；主按钮用墨色实底 | 主按钮/激活态/进度条三段渐变 |
+| 动效 | 150–220ms `ease-out`，只做 opacity 与 ≤4px 位移（`.kd-enter`） | 弹跳 `kd-pop`、常驻漂浮 `kd-float`、气泡果冻高光与底部「脚丫」阴影 |
+| 文案 | 陈述句、无叠词无波浪号（「地图上还没有气泡」） | 「还空空の呀」「投喂链接吧～」「排排坐」 |
+| 布局 | 同组控件合并为一块面板并用 1px 内分区；页面标题右侧挂 `kd-label` 元信息 | 三四个各自漂浮的胶囊散落四角 |
+
+例外：品牌艺术字 `src/ui/Wordmark.tsx` 是全站唯一允许“卖萌”的位置（暖橙双色渐变 + 贴纸白边 + 逐字母弹跳），
+界面其余部分一律保持中性。改视觉后必须回跑 `npm test`：`src/map/mapConfig.test.ts` 已钉住 `bubbleKind()` 的新签名。
+
+---
+
+## 7. 工程结构
+
+```
+eat-map/
+├── index.html
+├── vite.config.ts
+├── vercel.json               # SPA rewrite + 静态缓存策略
+├── package.json
+├── tsconfig.json             # references：app / node / server 三个 project
+├── tsconfig.server.json      # server/ 带 @types/node，不与浏览器项目混（否则 node:https 破坏 app 类型检查）
+├── scripts/
+│   ├── collect-cities.mjs    # 城市库采集（§5.1）
+│   ├── build-cities.mjs      # 城市库生成（§5.1）
+│   └── relay.mjs             # 本机中转入口：npm run relay（§4.5）
+├── server/                   # 浏览器外面那一跳（§4.5）
+│   ├── relayCore.ts          # 中转纯逻辑（零依赖、可单测）
+│   ├── relayNode.ts          # node:https 传输层
+│   └── relayCore.test.ts
+├── public/
+│   └── favicon.svg
+└── src/
+    ├── main.tsx / App.tsx    # 路由：/（地图） /import /ranking /data
+    ├── db/
+    │   ├── schema.ts         # 库表定义 + version + upgrade
+    │   └── videos.ts         # CRUD + 聚合（countByCity 等）
+    ├── ingest/
+    │   ├── parse.ts          # 链接识别正则、平台判断
+    │   ├── fetch.ts          # 直连→中转→代理链→降级 的抓取管线
+    │   ├── relay.ts          # 前端侧中转地址配置 + 探活（§4.5）
+    │   ├── proxies.ts        # 通道列表（中转排首位，每通道带超时/metaJson）
+    │   ├── geo.ts            # 城市识别
+    │   ├── classify.ts       # 吃/玩分类器
+    │   └── lexicon.ts        # 词表（持续迭代处）
+    ├── data/cities.json      # 城市→坐标→别名（由 scripts/build-cities.mjs 生成，见 §5.1）
+    ├── map/
+    │   ├── MapView.tsx       # react-leaflet 封装
+    │   ├── CityMarker.tsx    # divIcon 气泡
+    │   └── CityDrawer.tsx    # 城市视频抽屉
+    ├── pages/
+    │   ├── MapPage.tsx
+    │   ├── ImportPage.tsx
+    │   ├── RankingPage.tsx
+    │   └── DataPage.tsx      # 导出/导入/编辑/删除
+    └── ui/                   # 通用组件、样式
+        └── Wordmark.tsx      # 品牌艺术字 EatMap（SVG 逐字母 + 渐变贴纸描边）
+```
+
+编码约定：TypeScript strict；所有 IndexedDB 访问只允许经 `src/db/`；分类/城市词法逻辑全部是纯函数（方便单元测试，见 §9 M6）。
+
+---
+
+## 8. Vercel 部署
+
+1. 仓库根目录 `vercel.json`：
+
+```json
+{
+  "framework": "vite",
+  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
+  "headers": [
+    { "source": "/assets/(.*)",
+      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }] }
+  ]
+}
+```
+
+2. 本地验证：`npm run build && npm run preview`，确认生产构建无报错。
+3. 首次部署：`npm i -g vercel` → `vercel`（关联项目）→ `vercel --prod`。或推 GitHub 后在 Vercel 控制台 Import，Build Command `npm run build`，Output `dist`。
+4. 域名：`*.vercel.app` 在中国大陆直连不稳定。若地图瓦片/访问体验差，备选：绑定自有域名，或底图瓦片再准备一套 OSM 备选源（代码里 `TILE_LAYERS` 做成可切换）。
+5. 提醒用户（README/关于页）：数据存本地浏览器，清缓存前务必先在「数据页」导出 JSON。
+
+---
+
+## 9. 开发里程碑
+
+| 阶段 | 内容 | 验收标准 |
+|---|---|---|
+| M0 | 脚手架：Vite+TS+Tailwind+路由+Leaflet 出图 | 页面能看到中国地图 |
+| M1 | 数据层：schema、cities.json 灌入、CRUD、聚合 | 单测：写入/按城市聚合计数 |
+| M2 | 导入管线：链接正则 + 抓取(直连/代理) + 手动降级表单 | 公众号链接能抓到标题描述 |
+| M3 | 识别与分类：城市识别、吃/玩打分、置信度标记 | 10 条样例链接 ≥8 条城市正确、≥7 条分类正确 |
+| M4 | 地图交互：城市气泡、抽屉列表、点击跳转、筛选 | 端到端：导入→图上出现→点击→跳转 |
+| M5 | 推荐榜单 + 数据管理（编辑/删除/导出/导入） | 排序符合 food 权重规则；导出文件可回灌 |
+| M6 | 词表与别名迭代（用真实误判样本回灌 lexicon/cities aliases）、部署上线 | Vercel 生产域名可访问 |
+
+---
+
+## 10. 风险与已知局限（坦诚记录）
+
+| 风险 | 影响 | 缓解 |
+|---|---|---|
+| 小红书分享链必须带 xsec_token（~~曾误判为「登录墙不可绕过」~~，见 §4.3） | 去 token 的裸地址必被踢到 404 | 抓取用原地址、入库去 token；token 过期时走分享文案 / 页签取词 / 手动三条兜底 |
+| ~~app_share 的 token 在 web 端强制登录~~（第二次误判，已证伪，见 §4.3） | 曾经把本来能成功的链接提前判失败 | 早退已删除；真门槛是请求头三件套 + `node:https`，由中转代跑 |
+| 抓取主力是自托管中转，得本机开着 `npm run relay` | 忘了启动就降级 r.jina.ai → 公共代理 | `RelayBar` 状态灯常驻导入页；地址可手填成已部署的中转（存 localStorage） |
+| r.jina.ai 是外部依赖（匿名约 20 次/分钟，可能限流或下线） | 批量导入变慢或需降级 | 每通道独立超时 + 失败切换；`RATE_LIMIT_MS=1200` 节流；失败行给「重试 / 取词 / 手动」三条出口 |
+| 数据只在单浏览器 | 换设备丢失、清缓存丢失 | 导出/导入 JSON 为标配流程，导入页显著提示 |
+| 城市识别歧义（「海口」、「天津大学」类文本） | 误关联 | 通名上下文黑名单 + 同级才算歧义 + 置信度标黄人工复核；别名表持续迭代 |
+| 分类误判（吃玩混合视频） | 排序偏差 | 允许人工修改且 manual 不被覆盖；混合时默认偏「吃」 |
+| vercel.app 域名大陆访问不稳 | 地图打不开 | 绑定自定义域名；瓦片源可切换 |
+| 小红书分享链带过期 token 参数 | 去重误判 | 入库前规范化 URL（strip query 中的临时参数，保留 noteId） |
+
+---
+
+## 11. 快速启动命令
+
+```bash
+npm create vite@latest eat-map -- --template react-ts
+cd eat-map
+npm i leaflet react-leaflet idb
+npm i -D tailwindcss @types/leaflet
+npm run dev        # 本地开发 http://localhost:5173
+npm run relay      # 另开一个终端：本机中转 127.0.0.1:8787（§4.5，抓取主力通道）
+npm test           # vitest run（含 server/relayCore.test.ts 的无网络单测）
+npm run build      # 生产构建 → dist/
+vercel --prod      # 部署
+```

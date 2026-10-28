@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- 奶油底圆 -->
+  <circle cx="32" cy="32" r="30" fill="#fff3df" stroke="#f0b95e" stroke-width="2.5"/>
+  <!-- 筷子 -->
+  <line x1="35" y1="15" x2="50" y2="5" stroke="#c68b59" stroke-width="2.6" stroke-linecap="round"/>
+  <line x1="40" y1="17" x2="54" y2="9" stroke="#b57a4a" stroke-width="2.6" stroke-linecap="round"/>
+  <!-- 地图钉（弹在碗上方） -->
+  <path d="M20 6 C24.4 6 28 9.6 28 14 C28 19 20 27 20 27 C20 27 12 19 12 14 C12 9.6 15.6 6 20 6 Z" fill="#ff6b6b" stroke="#e85555" stroke-width="1.6"/>
+  <circle cx="20" cy="13.6" r="3.4" fill="#fff"/>
+  <!-- 面条 -->
+  <path d="M15 35 Q32 27 49 35" fill="none" stroke="#ffd479" stroke-width="5" stroke-linecap="round"/>
+  <!-- 碗身 -->
+  <path d="M11 37 L53 37 C52 49 43.5 55.5 32 55.5 C20.5 55.5 12 49 11 37 Z" fill="#ffffff" stroke="#7dd3c0" stroke-width="2.5" stroke-linejoin="round"/>
+  <path d="M13.5 43.5 Q32 49.5 50.5 43.5" fill="none" stroke="#bff0e3" stroke-width="3" stroke-linecap="round"/>
+  <!-- 腮红笑脸 -->
+  <circle cx="25" cy="46.5" r="2.1" fill="#4a3b32"/>
+  <circle cx="39" cy="46.5" r="2.1" fill="#4a3b32"/>
+  <path d="M28.5 49.5 Q32 53 35.5 49.5" fill="none" stroke="#4a3b32" stroke-width="2" stroke-linecap="round"/>
+  <circle cx="19.5" cy="49" r="2.6" fill="#ffb3ba" opacity=".85"/>
+  <circle cx="44.5" cy="49" r="2.6" fill="#ffb3ba" opacity=".85"/>
+</svg>

@@ -1,0 +1,112 @@
+import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
+// 城市库（743 条 / 67KB）走动态 import：打包成独立 chunk，不抬高主包体积，
+// 也避开首屏同步解析大 JSON（手册 §7：数据文件只允许在 src/db/ 里 import）
+
+/** ============ 类型定义（与 DEVELOPMENT.md §3 对应） ============ */
+
+export type Platform = 'xiaohongshu' | 'wechat';
+export type Category = 'food' | 'travel' | 'unknown';
+export type CategorySource = 'auto' | 'manual';
+
+export interface VideoRecord {
+  id: string;
+  url: string;
+  platform: Platform;
+  title: string;
+  desc?: string;
+  cover?: string;
+  category: Category;
+  categorySource: CategorySource;
+  /** 关联城市 → cities.code；识别失败为 'unknown' */
+  cityCode: string;
+  /** 城市识别置信度 0~1（§5.1），手动选择视为 1 */
+  geoConfidence?: number;
+  parsedAt: number;
+  note?: string;
+}
+
+export interface CityRecord {
+  code: string;
+  name: string;
+  province: string;
+  lng: number;
+  lat: number;
+  aliases: string[];
+}
+
+/** ============ 库表定义 ============ */
+
+interface EatmapSchema extends DBSchema {
+  videos: {
+    key: string;
+    value: VideoRecord;
+    indexes: { 'by-url': string; 'by-city': string; 'by-category': string; 'by-parsedAt': number };
+  };
+  cities: {
+    key: string;
+    value: CityRecord;
+  };
+}
+
+export const DB_NAME = 'eatmap';
+export const DB_VERSION = 1;
+
+let dbPromise: Promise<IDBPDatabase<EatmapSchema>> | null = null;
+
+/** 全局唯一连接（升级逻辑集中在此） */
+export function getDB(): Promise<IDBPDatabase<EatmapSchema>> {
+  if (!dbPromise) {
+    dbPromise = openDB<EatmapSchema>(DB_NAME, DB_VERSION, {
+      upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+          const videos = db.createObjectStore('videos', { keyPath: 'id' });
+          videos.createIndex('by-url', 'url', { unique: true });
+          videos.createIndex('by-city', 'cityCode');
+          videos.createIndex('by-category', 'category');
+          videos.createIndex('by-parsedAt', 'parsedAt');
+          db.createObjectStore('cities', { keyPath: 'code' });
+        }
+        // 未来加字段示例：升 DB_VERSION 后在这里做数据迁移
+        // if (oldVersion < 2) { ... }
+      },
+    });
+  }
+  return dbPromise;
+}
+
+/** ============ 城市种子数据灌入（§3.2，启动时调用） ============ */
+
+/**
+ * 幂等 upsert，但只跑一次：城市库已从 68 扩到 743 条，
+ * 而 MapPage / RankingPage / DataPage 各自 reload 都会调它，
+ * 不做缓存就是每次进页面重跑 743 个 put。失败时清缓存以便重试。
+ */
+let seedPromise: Promise<number> | null = null;
+
+export function seedCities(): Promise<number> {
+  seedPromise ??= (async () => {
+    const { default: citiesSeed } = await import('../data/cities.json');
+    const db = await getDB();
+    const tx = db.transaction('cities', 'readwrite');
+    await Promise.all([
+      ...citiesSeed.map((c) => tx.store.put(c as CityRecord)),
+      tx.done,
+    ]);
+    return citiesSeed.length;
+  })().catch((e) => {
+    seedPromise = null;
+    throw e;
+  });
+  return seedPromise;
+}
+
+/** 全量城市（城市识别 geo.ts 的词典也用它） */
+export async function getAllCities(): Promise<CityRecord[]> {
+  const db = await getDB();
+  return db.getAll('cities');
+}
+
+export async function getCity(code: string): Promise<CityRecord | undefined> {
+  const db = await getDB();
+  return db.get('cities', code);
+}

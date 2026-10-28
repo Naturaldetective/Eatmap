@@ -1,0 +1,325 @@
+@import 'tailwindcss';
+
+/* ===== EatMap 设计系统 =====
+ * 原则：可爱来自「圆润的线条 + 暖纸底色 + 克制的动效」，不来自 emoji、渐变与描边贴纸。
+ * 中性色（纸/墨）承担 95% 的界面，彩色只出现在两处语义——吃（焦糖）与玩（松绿）。
+ */
+@theme {
+  /* 纸与墨 */
+  --color-canvas: #faf8f5;
+  --color-surface: #ffffff;
+  --color-surface-2: #f3f0eb;
+  --color-ink: #26211d;
+  --color-ink-2: #574e46;
+  --color-ink-3: #8f857a;
+  --color-line: #ece7e0;
+  --color-line-2: #dbd4c9;
+
+  /* 数据语义色：全站唯一的彩色来源 */
+  --color-food: #d9480f;
+  --color-food-soft: #fdeee5;
+  --color-travel: #0f7b6c;
+  --color-travel-soft: #e6f2ef;
+  --color-warn: #a1751a;
+  --color-warn-soft: #fdf6e3;
+  --color-danger: #b02525;
+  --color-danger-soft: #fdecec;
+
+  /* 阴影只分两档：贴在纸上的、浮起来一点的 */
+  --shadow-soft: 0 1px 2px rgba(38, 33, 29, 0.04), 0 2px 8px rgba(38, 33, 29, 0.045);
+  --shadow-float: 0 2px 6px rgba(38, 33, 29, 0.06), 0 14px 34px rgba(38, 33, 29, 0.1);
+
+  --radius-card: 14px;
+
+  /* 正文用规整黑体（圆体只留给品牌字，一处个性就够） */
+  --font-round: 'PingFang SC', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+    'Microsoft YaHei', system-ui, sans-serif;
+
+  /* 品牌艺术字专用：拉丁圆体优先（macOS 命中 SF Rounded） */
+  --font-display: ui-rounded, 'SF Pro Rounded', 'Chalkboard SE', 'Baloo 2',
+    'Comic Sans MS', var(--font-round);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: var(--font-round);
+  font-size: 14px;
+  background: var(--color-canvas);
+  color: var(--color-ink-2);
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ===== 地图底座 ===== */
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  font-family: var(--font-round);
+  background: #f1eee9;
+}
+/* 底图降饱和提亮：让地图退到背景层，气泡才是唯一视觉焦点 */
+.map-tiles {
+  filter: saturate(0.62) contrast(0.9) brightness(1.03);
+}
+.leaflet-control-attribution {
+  font-size: 10px !important;
+  padding: 1px 6px !important;
+  border-radius: 6px 0 0 0;
+  background: rgba(255, 255, 255, 0.72) !important;
+  color: var(--color-ink-3) !important;
+}
+.leaflet-control-attribution a {
+  color: var(--color-ink-3) !important;
+}
+.leaflet-control-zoom {
+  border: 1px solid var(--color-line) !important;
+  border-radius: 10px !important;
+  overflow: hidden;
+  box-shadow: var(--shadow-soft) !important;
+}
+.leaflet-control-zoom a {
+  width: 30px !important;
+  height: 30px !important;
+  line-height: 30px !important;
+  font-size: 15px !important;
+  border-color: var(--color-line) !important;
+  background: var(--color-surface) !important;
+  color: var(--color-ink-2) !important;
+}
+.leaflet-control-zoom a:hover {
+  background: var(--color-surface-2) !important;
+}
+.leaflet-tooltip {
+  padding: 3px 8px !important;
+  border: 1px solid var(--color-line) !important;
+  border-radius: 8px !important;
+  box-shadow: var(--shadow-soft) !important;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink) !important;
+}
+
+/* ===== 城市气泡 =====
+ * 纯色实心 + 白环 + 一层薄投影。不做果冻高光、不做底部「脚丫」阴影。
+ */
+.bubble {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  border: 2px solid #fff;
+  color: #fff;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow:
+    0 0 0 1px rgba(38, 33, 29, 0.1),
+    0 2px 6px rgba(38, 33, 29, 0.22);
+  transition: transform 0.16s ease-out, box-shadow 0.16s ease-out;
+}
+.bubble:hover {
+  transform: translateY(-1px) scale(1.06);
+  box-shadow:
+    0 0 0 1px rgba(38, 33, 29, 0.14),
+    0 6px 14px rgba(38, 33, 29, 0.26);
+  z-index: 900;
+}
+.bubble-food {
+  background: var(--color-food);
+}
+.bubble-travel {
+  background: var(--color-travel);
+}
+/* 吃玩相当：对角硬分界，图形本身就是信息 */
+.bubble-mixed {
+  background: linear-gradient(
+    135deg,
+    var(--color-food) 0 50%,
+    var(--color-travel) 50% 100%
+  );
+}
+
+/* ===== 通用控件 ===== */
+.kd-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-card);
+  box-shadow: var(--shadow-soft);
+}
+/* 小标签：与正文拉开字号/字重差，是「高级感」最省力的手段 */
+.kd-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  color: var(--color-ink-3);
+}
+.kd-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 0.42rem 0.8rem;
+  font-size: 0.8125rem;
+  font-weight: 500;
+  /* 窄窗口下 flex 会把胶囊压到中文逐字换行（「地/图」），按钮永不换行 */
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background-color 0.15s, border-color 0.15s, color 0.15s;
+}
+.kd-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+/* 主按钮用墨色而非渐变：把彩色留给数据 */
+.kd-btn-primary {
+  background: var(--color-ink);
+  color: #fff;
+}
+.kd-btn-primary:hover:not(:disabled) {
+  background: #3b322b;
+}
+.kd-btn-ghost {
+  background: var(--color-surface);
+  border-color: var(--color-line-2);
+  color: var(--color-ink-2);
+}
+.kd-btn-ghost:hover:not(:disabled) {
+  background: var(--color-surface-2);
+  border-color: var(--color-ink-3);
+  color: var(--color-ink);
+}
+.kd-btn-danger:hover:not(:disabled) {
+  background: var(--color-danger-soft);
+  border-color: #e8bcbc;
+  color: var(--color-danger);
+}
+.kd-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 6px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+.kd-input {
+  border: 1px solid var(--color-line-2);
+  border-radius: 9px;
+  background: var(--color-surface);
+  padding: 0.4rem 0.65rem;
+  font-size: 0.8125rem;
+  color: var(--color-ink);
+  outline: none;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+.kd-input::placeholder {
+  color: var(--color-ink-3);
+}
+.kd-input:focus {
+  border-color: var(--color-food);
+  box-shadow: 0 0 0 3px rgba(217, 72, 15, 0.12);
+}
+/* 分段控件：轨道内浮起白块，替代原来的渐变胶囊 */
+.kd-seg {
+  display: flex;
+  gap: 2px;
+  border-radius: 10px;
+  background: var(--color-surface-2);
+  padding: 2px;
+}
+.kd-seg-item {
+  flex: 1;
+  border-radius: 8px;
+  padding: 0.25rem 0.5rem;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-ink-3);
+  transition: background-color 0.15s, box-shadow 0.15s, color 0.15s;
+}
+.kd-seg-item:hover {
+  color: var(--color-ink-2);
+}
+.kd-seg-item[data-active='true'] {
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-weight: 600;
+  box-shadow: 0 1px 2px rgba(38, 33, 29, 0.1);
+}
+.kd-dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  flex: none;
+  border-radius: 9999px;
+}
+/* 低置信度提示：用暗金描边，不用 tailwind 亮 amber（亮黄+粗边=警示贴纸感） */
+.kd-low {
+  border-color: #d9b96a !important;
+  background: var(--color-warn-soft) !important;
+  color: var(--color-warn) !important;
+}
+
+/* ===== 动效：只做 opacity / 4px 位移，不做弹跳与漂浮 ===== */
+@keyframes kd-fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.kd-enter {
+  animation: kd-fade-up 0.22s ease-out both;
+}
+
+/* ===== 品牌艺术字（src/ui/Wordmark.tsx）===== */
+.wordmark {
+  height: 22px;
+  width: auto;
+  overflow: visible;
+}
+.wordmark-letter {
+  font-family: var(--font-display);
+  font-weight: 700;
+  stroke: var(--color-surface);
+  stroke-width: 2.4;
+  /* 描边画在填充下面，否则白边会啃掉字母本身 */
+  paint-order: stroke;
+  transform-box: fill-box;
+  transform-origin: 50% 85%;
+  transform: rotate(var(--r)) translateY(var(--o));
+  transition: transform 0.24s ease-out;
+  transition-delay: calc(var(--i) * 18ms);
+}
+.wordmark:hover .wordmark-letter {
+  transform: rotate(calc(var(--r) * 0.5)) translateY(calc(var(--o) - 2px));
+}
+
+/* ===== 滚动条 ===== */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #ded7cd;
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c8bfb3;
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
