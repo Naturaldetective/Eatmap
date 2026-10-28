@@ -272,11 +272,13 @@ export interface RelayEnv {
  * `Access-Control-Allow-Private-Network` 是给「云上 https 页面直接调本机 127.0.0.1」那条路用的：
  * Chrome 的 PNA（私有网络访问）会先预检，响应不回这个头就被拦在浏览器里，
  * 不配也不影响本机同源（vite 代理）那条路。
+ * methods 由调用方给：中转只读（GET），同步要写（PUT / DELETE），别一视同仁地放开写。
  */
 export function relayCorsHeaders(
   origin: string | undefined,
   env: RelayEnv,
   requestHeaders?: string,
+  methods = 'GET, OPTIONS',
 ): Record<string, string> {
   const list = (env.allowedOrigins ?? '')
     .split(',')
@@ -290,7 +292,7 @@ export function relayCorsHeaders(
   return {
     'Access-Control-Allow-Origin': allow,
     'Access-Control-Allow-Headers': requestHeaders || 'content-type',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': methods,
     'Access-Control-Allow-Private-Network': 'true',
     // 回 * 时不随 Origin 变，不能发空的 Vary（会让中间层以为要按源分开存）
     ...(list.length ? { Vary: 'Origin' } : {}),

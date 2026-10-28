@@ -1,6 +1,6 @@
 import { getDB, type Category, type VideoRecord } from './schema';
 
-export type { Category, CityRecord, VideoRecord } from './schema';
+export type { Category, CityRecord, SyncMetaRecord, Tombstone, VideoRecord } from './schema';
 export { seedCities, getAllCities, getCity, getDB } from './schema';
 
 /** addVideo 的返回结合类型（导出供测试/调用方收窄） */
@@ -14,10 +14,12 @@ export type NewVideo = Omit<VideoRecord, 'id' | 'parsedAt'> &
 /** 新增：url 唯一索引冲突时返回已存在记录（调用方决定跳过/覆盖，§4.4） */
 export async function addVideo(input: NewVideo): Promise<AddResult> {
   const db = await getDB();
+  const now = Date.now();
   const video: VideoRecord = {
-    parsedAt: Date.now(),
+    parsedAt: now,
     ...input,
     id: input.id ?? crypto.randomUUID(),
+    updatedAt: input.updatedAt ?? now,
   };
   const existing = await db.getFromIndex('videos', 'by-url', video.url);
   if (existing) return { ok: false, existing };
@@ -35,14 +37,22 @@ export async function updateVideo(patch: Partial<Omit<VideoRecord, 'id'>> & { id
     const dup = await db.getFromIndex('videos', 'by-url', patch.url);
     if (dup && dup.id !== patch.id) throw new Error(`url already exists: ${patch.url}`);
   }
-  const next: VideoRecord = { ...old, ...patch, id: old.id };
+  // 不显式传 updatedAt 的一律视为「刚刚改过」：同步合并就靠这个时间定胜负
+  const next: VideoRecord = { ...old, ...patch, id: old.id, updatedAt: patch.updatedAt ?? Date.now() };
   await db.put('videos', next);
   return next;
 }
 
+/** 删除同时落下 tombstone（§4.6）：云上要据此压制其他设备的旧快照，否则删了又复活 */
 export async function deleteVideo(id: string): Promise<void> {
   const db = await getDB();
-  await db.delete('videos', id);
+  const old = await db.get('videos', id);
+  const tx = db.transaction(['videos', 'tombstones'], 'readwrite');
+  tx.objectStore('videos').delete(id);
+  if (old) {
+    tx.objectStore('tombstones').put({ id, url: old.url, deletedAt: Date.now() });
+  }
+  await tx.done;
 }
 
 export async function getVideoByUrl(url: string): Promise<VideoRecord | undefined> {

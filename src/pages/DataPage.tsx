@@ -11,6 +11,8 @@ import {
 import type { BackupFile, MergeStrategy } from '../db/videos';
 import type { Category, CityRecord, VideoRecord } from '../db/schema';
 import { clearDemoData, loadDemoData } from '../db/demo';
+import { scheduleSync } from '../sync/cloud';
+import SyncCard from '../sync/SyncCard';
 import Icon from '../ui/Icon';
 
 const CAT_DOT: Record<Category, string> = {
@@ -49,6 +51,8 @@ export default function DataPage() {
     } finally {
       setBusy(false);
       await reload();
+      // 改完数据防抖推一次（未设口令时 scheduleSync 自己会直接返回）
+      scheduleSync();
     }
   }
 
@@ -79,7 +83,7 @@ export default function DataPage() {
         <div>
           <h1 className="text-[19px] font-semibold tracking-tight text-ink">数据管理</h1>
           <p className="mt-1 text-[12.5px] text-ink-3">
-            数据存在本浏览器（IndexedDB）。换设备或清缓存前请先导出备份。
+            主存储一直在本浏览器（IndexedDB）；设了空间口令就自动上云，换设备填同一口令即可。
           </p>
         </div>
         <span className="kd-label shrink-0 tabular-nums">{videos.length} 条</span>
@@ -142,6 +146,8 @@ export default function DataPage() {
           {msg}
         </p>
       )}
+
+      <SyncCard />
 
       {/* 列表：标题做成 Notion 式无框行内编辑，不再给每个输入框加一层盒子 */}
       <ul className="flex flex-col gap-2">

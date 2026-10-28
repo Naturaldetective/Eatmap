@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { addVideo, getAllCities, getVideoByUrl } from '../db/videos';
+import { scheduleSync } from '../sync/cloud';
 import type { Category, CityRecord, VideoRecord } from '../db/schema';
 import { detectPlatform, normalizeUrl, parseShareText, splitLinks } from '../ingest/parse';
 import type { LinkHit } from '../ingest/parse';
@@ -207,8 +208,11 @@ export default function ImportPage() {
       cityCode: row.cityCode ?? 'unknown',
       geoConfidence: row.geoConfidence,
     });
-    if (r.ok) patchRow(row.id, { status: 'saved', savedVideo: r.video });
-    else patchRow(row.id, { status: 'duplicate', message: 'url 已存在' });
+    if (r.ok) {
+      patchRow(row.id, { status: 'saved', savedVideo: r.video });
+      // 导入完一批只推一次（防抖在 scheduleSync 里）
+      scheduleSync();
+    } else patchRow(row.id, { status: 'duplicate', message: 'url 已存在' });
   }
 
   const cityName = (code: string) => cities.find((c) => c.code === code)?.name ?? '未识别';

@@ -23,6 +23,27 @@ export interface VideoRecord {
   geoConfidence?: number;
   parsedAt: number;
   note?: string;
+  /** 最后一次人工修改时间（§4.6 合并时比这个判谁赢；缺省视为等于 parsedAt） */
+  updatedAt?: number;
+}
+
+/** 删除标记（§4.6）：不记这个的话，本地删掉的记录下次拉取会从云上原样复活 */
+export interface Tombstone {
+  id: string;
+  url: string;
+  deletedAt: number;
+}
+
+/** 同步游标：只存一行，记录本机对齐到云上的哪个版本 */
+export interface SyncMetaRecord {
+  id: 'state';
+  /** 云上快照版本号；0 = 从未同步过 */
+  rev: number;
+  updatedAt: number;
+  lastPulledAt: number;
+  lastPushedAt: number;
+  /** 上次推上去的本地数据指纹（条数:最新时间）；变了才推，不每次拉完都白推一趟 */
+  fingerprint: string;
 }
 
 export interface CityRecord {
@@ -46,10 +67,18 @@ interface EatmapSchema extends DBSchema {
     key: string;
     value: CityRecord;
   };
+  tombstones: {
+    key: string;
+    value: Tombstone;
+  };
+  syncMeta: {
+    key: string;
+    value: SyncMetaRecord;
+  };
 }
 
 export const DB_NAME = 'eatmap';
-export const DB_VERSION = 1;
+export const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<EatmapSchema>> | null = null;
 
@@ -66,8 +95,14 @@ export function getDB(): Promise<IDBPDatabase<EatmapSchema>> {
           videos.createIndex('by-parsedAt', 'parsedAt');
           db.createObjectStore('cities', { keyPath: 'code' });
         }
+        // v2：云端同步要的两张表（删除标记 + 同步游标），老库直接建空表即可，
+        // 不需要迁移老数据 —— 老记录没 updatedAt 就按 parsedAt 算（见 merge.ts）
+        if (oldVersion < 2) {
+          db.createObjectStore('tombstones', { keyPath: 'id' });
+          db.createObjectStore('syncMeta', { keyPath: 'id' });
+        }
         // 未来加字段示例：升 DB_VERSION 后在这里做数据迁移
-        // if (oldVersion < 2) { ... }
+        // if (oldVersion < 3) { ... }
       },
     });
   }

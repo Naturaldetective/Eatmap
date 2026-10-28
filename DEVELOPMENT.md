@@ -75,7 +75,8 @@
 
 ## 3. 数据模型（IndexedDB）
 
-数据库名：`eatmap`，版本 `1`。由 `src/db/schema.ts` 集中管理，**每次改表结构必须升 version 并写 `upgrade` 迁移**。
+数据库名：`eatmap`，版本 `2`（v2 加了 `tombstones` / `syncMeta` 两张同步附表，见 §3.5）。
+由 `src/db/schema.ts` 集中管理，**每次改表结构必须升 version 并写 `upgrade` 迁移**。
 
 ### 3.1 `videos`（主表：导入的视频）
 
@@ -91,6 +92,7 @@ interface VideoRecord {
   categorySource: 'auto' | 'manual';         // 分类来源，manual 后不再被自动覆盖
   cityCode: string;        // 关联城市 → cities.code，识别失败为 'unknown'
   parsedAt: number;        // 时间戳
+  updatedAt?: number;      // 最后修改时间（v2 起，§4.6 合并定胜负用；老数据缺省按 parsedAt 算）
   note?: string;           // 用户备注
 }
 // 索引：url(unique), cityCode, category, parsedAt
@@ -119,6 +121,21 @@ interface CityRecord {
 { "app": "eatmap", "version": 1, "exportedAt": 1730000000000, "videos": [ ...VideoRecord ] }
 ```
 导入时按 `url` 去重合并（已有则跳过或覆盖，弹窗二选一）。cities 是静态数据，不需要导出。
+
+云端快照（§4.6）是另一个格式，多两个字段：`rev`（服务端定的版本号）与 `deleted`（id → 删除时间）。
+两者不通用，备份文件不能当快照推，反之亦然。
+
+### 3.5 同步附表（v2）
+
+```ts
+interface Tombstone { id: string; url: string; deletedAt: number }  // 删除标记
+interface SyncMetaRecord {                                          // 只一行，id: 'state'
+  rev: number;              // 本机对齐到云上的快照版本，0 = 从未同步
+  updatedAt: number;
+  lastPulledAt: number; lastPushedAt: number;
+  fingerprint: string;      // 上次推上去的数据指纹「条数:标记数:最新时间」
+}
+```
 
 ---
 
@@ -235,11 +252,80 @@ interface CityRecord {
 - 本地调试：`npm i -g edgeone` 后在项目根跑 `edgeone pages dev`（http://localhost:8088）；推送到关联仓库即自动构建发布。
 - 环境变量在 Pages 项目设置里配：`RELAY_ALLOWED_ORIGINS`（建议填站点自己的源，否则默认 `*`）。
 - 域名白名单与「每跳复校」在服务端仍然生效，所以这个公开端点只能拿三个白名单域，不是通用代理。
-- **未验证风险**：机房出口 IP 会不会被小红书风控（本机宽带 IP 已验证可用）；以及平台构建器能不能解析仓库根外的相对 import。
-  上线后第一件事是端到端跑一条带 token 的链接，拿不到就改方案 B（真服务器）。
+- **已验证（云上端到端跑通）**：机房出口 IP 没被小红书风控，函数路由确实优先于 SPA 回退，
+  `node-functions` 里 `../../server/...` 的相对 import 与 npm 依赖平台构建器能解析。
+  导入页状态条从「应答 200（回的首页 HTML，假绿灯）」变成「应答 502 · 中转信封」，
+  502 是探活用的假笔记地址取不到正文，属预期（见 §4.5 探活判定）。
 
 > 另：Vercel 形态（`api/fetch.ts`）仍未做。它的 SPA rewrite `/(.*)` 会吞掉 `/api/*`，
 > 需先改成 `/((?!api/).*)`；EdgeOne Pages 因为函数路由优先，没这个问题。
+
+---
+
+### 4.6 云端同步（`server/syncCore.ts` + `node-functions/api/data.ts` + `src/sync/`）
+
+静态托管站没有数据库，换设备/清浏览器缓存数据就没了。平台提供的持久化只有两种：
+
+| 能力 | 结论 |
+|---|---|
+| 托管数据库 | **没有**（官方明确：无 SQL / 无 MongoDB） |
+| KV 存储 | 仅 edge-functions（V8）可用，要控制台开通 + 绑命名空间，`list` 每次上限 256 键 |
+| **Blob 存储** | `@edgeone/pages-blob`，`getStore('eatmap')` 首次调用自动建命名空间（零配置），1GB 免费、单对象 25MB，node-functions 可用 |
+
+所以：**Blob 的 key 前缀当「表」用**，整个空间就一个 `spaces/<spaceId>/state.json`。
+
+#### 语义：本地为主，云上是一份带版本的全量快照
+
+流程固定为「拉 → 合并进本地 → 本地全量推回去」。服务端**不参与合并**：
+合并规则（谁的时间新、删除怎么压制）只有前端 `src/sync/merge.ts` 一份，两边各写一遍必然漂移。
+服务端只做三件事：校验快照、比 rev、存取存储。地图/榜单/离线全部照旧读 IndexedDB，同步挂了不影响浏览。
+
+#### 并发：rev 乐观锁（平台的锁不可依赖）
+
+`@edgeone/pages-blob` 的 `set(key, v, { onlyIfNew })` 在类型定义里标了 `@deprecated`、
+**底层不强制**（已存在的 key 照样覆盖），所以不能拿它当锁。改成版本号：
+
+- 客户端 PUT 带上自己拉到的 `baseRev`；服务端读当前快照（`consistency: 'strong'`，读己之写），
+  `rev !== baseRev` 就回 **409 + 服务端当前快照**，客户端合并后重试（上限 2 次）；
+- `rev` 与 `updatedAt` 一律由服务端写，客户端带来的值不采信；
+- 快照响应恒带 `Cache-Control: no-store`，防中间层缓存把旧 rev 喂回来。
+
+#### 三条合并硬规则（`src/sync/merge.ts`）
+
+1. **先按 id 合流**：同一条记录本地/云端各一份时取时间新的 —— 不能当「重复」处理，
+   否则会给自己下删除标记（这个坑踩过，表现为「同步一次数据自己消失」）；
+2. **再按 url 归并**：不同 id 撞同一 url 才是真重复（两台设备各自粘了同一条链接），时间新的赢、
+   同分本地赢，败者落删除标记并从本地删；
+3. **删除按 id 压制**：只有 `tombstone.deletedAt >= 记录时间` 才判删；云端带来的无 url 标记也要保留并推回去，
+   滤掉就等于把别人的删除抹了，第三台设备一拉集体复活。
+
+落库时**先删后写**（`src/db/sync.ts` 的 `applyMerge`）：`videos.url` 是唯一索引，
+同 url 换 id 时先 put 新记录会撞旧记录的索引。
+
+#### 空间与口令
+
+- `/api/data` 是公开接口，任何人都能调 → 数据按 `spaces/<spaceId>/` 分目录，
+  `spaceId = sha256(口令)` 的十六进制前 16 位；
+- **口令本身不上网，上网的是它的哈希**，所以哈希等价于 bearer 凭证：拿到就能读写该空间，
+  口令要当密码保管（丢了 = 云上那份找得回但想不起口令）；
+- 跨端一致性靠「同名字面量向量」钉住：`server/syncCore.test.ts` 与 `src/sync/spaceId.test.ts`
+  各断言一次 `eatmap-demo → 3bf86d02c12030f5`，两边算法一漂就有一侧红（互相 import 反而测不出来）；
+- 改口令 = 换空间，走客户端驱动的迁移：拉平旧空间 → 记新口令 → 推新空间 →（可选）`DELETE` 旧空间，
+  服务端不需要 move 接口。
+
+#### 触发时机
+
+`App` 挂载与窗口 focus 时拉平，切到后台前推一次；导入页/数据页每次改动后 `scheduleSync()`
+（防抖 1.5s，批量导入只推一趟）。推之前比数据指纹，一致就不白推。
+删除标记保留 90 天（`SYNC_TTL_MS`）后清理 —— 某台设备离线超过这个窗口，会把别人早已删掉的记录拉回来。
+
+#### 本机 dev
+
+`npm run relay` 除了 `/api/fetch` 还挂 `/api/data`，存储是 `.eatmap-sync/` 下的文件
+（`server/syncFileStore.ts`，已 gitignore）；vite 把两个路径都代理过去。
+存在的唯一理由：让本地和云上跑**同一份 syncCore 判定**，不会出现「本地好的、云上不一样」。
+
+> 数据在公网上是按口令分开的**明文快照**，只放探店记录，别塞敏感信息。
 
 ---
 
@@ -388,19 +474,29 @@ eat-map/
 │   ├── collect-cities.mjs    # 城市库采集（§5.1）
 │   ├── build-cities.mjs      # 城市库生成（§5.1）
 │   └── relay.mjs             # 本机中转入口：npm run relay（§4.5）
-├── node-functions/           # 云上形态的中转（EdgeOne Pages Node Functions，§4.5）
-│   └── api/fetch.ts          # → /api/fetch，import 同一套 server/ 代码（零副本）
-├── server/                   # 浏览器外面那一跳（§4.5）
+├── node-functions/           # 云上形态的服务端（EdgeOne Pages Node Functions，§4.5 / §4.6）
+│   ├── api/fetch.ts          # → /api/fetch，import 同一套 server/ 代码（零副本）
+│   └── api/data.ts           # → /api/data，读写 EdgeOne Blob 存储（存什么、为何不用 KV 见 §4.6）
+├── server/                   # 浏览器外面那一跳（§4.5 / §4.6）
 │   ├── relayCore.ts          # 中转纯逻辑（零依赖、可单测）
 │   ├── relayNode.ts          # node:https 传输层
-│   └── relayCore.test.ts
+│   ├── syncCore.ts           # 同步纯逻辑：口令哈希 / 快照校验 / rev 乐观并发（存储注入）
+│   ├── syncFileStore.ts      # 本机 dev 的 SyncStore（.eatmap-sync/，已 gitignore）
+│   ├── relayCore.test.ts
+│   └── syncCore.test.ts
 ├── public/
 │   └── favicon.svg
 └── src/
     ├── main.tsx / App.tsx    # 路由：/（地图） /import /ranking /data
     ├── db/
     │   ├── schema.ts         # 库表定义 + version + upgrade
-    │   └── videos.ts         # CRUD + 聚合（countByCity 等）
+    │   ├── videos.ts         # CRUD + 聚合（countByCity 等）
+    │   └── sync.ts           # 同步附表读写（合并结果落库、游标、标记清理）
+    ├── sync/
+    │   ├── merge.ts          # 合并规则（纯函数：按 id 合流 → 按 url 归并 → 删除压制）
+    │   ├── spaceId.ts        # 口令 → 空间 id（WebCrypto，与服务端哈希必须一致）
+    │   ├── cloud.ts          # 拉/推/冲突重试、自动同步调度、口令与迁移
+    │   └── SyncCard.tsx      # 数据页的同步状态与设置卡片
     ├── ingest/
     │   ├── parse.ts          # 链接识别正则、平台判断
     │   ├── fetch.ts          # 直连→中转→代理链→降级 的抓取管线
@@ -416,9 +512,9 @@ eat-map/
     │   └── CityDrawer.tsx    # 城市视频抽屉
     ├── pages/
     │   ├── MapPage.tsx
-    │   ├── ImportPage.tsx
+    │   ├── ImportPage.tsx    # 链接导入 + RelayBar 中转状态灯
     │   ├── RankingPage.tsx
-    │   └── DataPage.tsx      # 导出/导入/编辑/删除
+    │   └── DataPage.tsx      # 导出/导入/编辑/删除 + SyncCard 云端同步
     └── ui/                   # 通用组件、样式
         └── Wordmark.tsx      # 品牌艺术字 EatMap（SVG 逐字母 + 渐变贴纸描边）
 ```
@@ -427,7 +523,10 @@ eat-map/
 
 ---
 
-## 8. Vercel 部署
+## 8. 部署
+
+> **线上实际跑在 EdgeOne Pages**（`*.edgeone.cool`），服务端代码是 `node-functions/`（§4.5 中转、§4.6 同步）。
+> 下面这套 Vercel 形态仍未做（包括 `api/fetch.ts` 与函数路由），只当备选方案保留。
 
 1. 仓库根目录 `vercel.json`：
 
@@ -445,7 +544,7 @@ eat-map/
 2. 本地验证：`npm run build && npm run preview`，确认生产构建无报错。
 3. 首次部署：`npm i -g vercel` → `vercel`（关联项目）→ `vercel --prod`。或推 GitHub 后在 Vercel 控制台 Import，Build Command `npm run build`，Output `dist`。
 4. 域名：`*.vercel.app` 在中国大陆直连不稳定。若地图瓦片/访问体验差，备选：绑定自有域名，或底图瓦片再准备一套 OSM 备选源（代码里 `TILE_LAYERS` 做成可切换）。
-5. 提醒用户（README/关于页）：数据存本地浏览器，清缓存前务必先在「数据页」导出 JSON。
+5. 提醒用户（README/关于页）：主存储在本浏览器，但可在「数据页」设空间口令自动上云（§4.6）；没设口令时清缓存仍会丢，导出 JSON 仍是兼底。
 
 ---
 
@@ -471,7 +570,11 @@ eat-map/
 | ~~app_share 的 token 在 web 端强制登录~~（第二次误判，已证伪，见 §4.3） | 曾经把本来能成功的链接提前判失败 | 早退已删除；真门槛是请求头三件套 + `node:https`，由中转代跑 |
 | 抓取主力是自托管中转，得本机开着 `npm run relay` | 忘了启动就降级 r.jina.ai → 公共代理 | `RelayBar` 状态灯常驻导入页；地址可手填成已部署的中转（存 localStorage） |
 | r.jina.ai 是外部依赖（匿名约 20 次/分钟，可能限流或下线） | 批量导入变慢或需降级 | 每通道独立超时 + 失败切换；`RATE_LIMIT_MS=1200` 节流；失败行给「重试 / 取词 / 手动」三条出口 |
-| 数据只在单浏览器 | 换设备丢失、清缓存丢失 | 导出/导入 JSON 为标配流程，导入页显著提示 |
+| 数据只在单浏览器 | 换设备丢失、清缓存丢失 | ~~只靠导出 JSON~~ → 已上云：空间口令 + EdgeOne Blob 快照自动同步（§4.6）；导出/导入仍作兼底 |
+| 同步接口 `/api/data` 公开可调 | 没口令的人乱写会污染 Blob（但进不了你的空间：目录按口令哈希分） | 快照服务端校验 + 8MB 体积上限 + 50_000 条上限；口令当密码保管（丢了 = 云上那份找不回） |
+| 多设备同时写（rev 冲突靠重试收敛） | 极端情况下一次推送要重试 2 次，超过就报错 | 409 带回服务端快照由客户端合并后重试；自用单主写入场景几乎碰不到 |
+| 删除标记只存 90 天（`SYNC_TTL_MS`） | 某设备离线超窗口会把别人早已删的记录拉回来 | 长期多端就调大窗口；或先拉后推、不要长期离线 |
+| EdgeOne Blob 默认 60s 最终一致 | rev 比对拿到旧值 → 误判冲突 | 读写全走 `consistency: 'strong'`，响应恒 `no-store` |
 | 城市识别歧义（「海口」、「天津大学」类文本） | 误关联 | 通名上下文黑名单 + 同级才算歧义 + 置信度标黄人工复核；别名表持续迭代 |
 | 分类误判（吃玩混合视频） | 排序偏差 | 允许人工修改且 manual 不被覆盖；混合时默认偏「吃」 |
 | vercel.app 域名大陆访问不稳 | 地图打不开 | 绑定自定义域名；瓦片源可切换 |

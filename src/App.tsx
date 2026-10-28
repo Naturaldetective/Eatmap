@@ -1,10 +1,12 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
+import { useEffect } from 'react';
 import MapPage from './pages/MapPage';
 import ImportPage from './pages/ImportPage';
 import RankingPage from './pages/RankingPage';
 import DataPage from './pages/DataPage';
 import Wordmark from './ui/Wordmark';
 import Icon from './ui/Icon';
+import { startAutoSync } from './sync/cloud';
 import type { IconName } from './ui/Icon';
 
 const NAV_ITEMS: { to: string; label: string; icon: IconName }[] = [
@@ -15,6 +17,9 @@ const NAV_ITEMS: { to: string; label: string; icon: IconName }[] = [
 ];
 
 export default function App() {
+  // 云端同步（§4.6）：进页面拉平、切后台前推平；没设口令时什么都不做
+  useEffect(() => startAutoSync(), []);
+
   return (
     <div className="flex h-full flex-col bg-canvas">
       <header className="flex h-14 shrink-0 items-center gap-5 border-b border-line bg-surface px-5">
