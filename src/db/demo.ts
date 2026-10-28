@@ -6,6 +6,8 @@ import type { Category, VideoRecord } from './schema';
  * url 统一带 demo 标记，便于「清空示例数据」按前缀删除，绝不混入真实导入数据。
  */
 const DEMO_URL_PREFIX = 'https://demo.eatmap.local/';
+/** 导出给测试断言「示例数据不得混进真实导入的数据」 */
+export { DEMO_URL_PREFIX as DEMO_PREFIX };
 
 interface DemoSpec {
   cityCode: string;
@@ -109,5 +111,3 @@ export async function clearDemoData(): Promise<number> {
   for (const v of demos) await deleteVideo(v.id);
   return demos.length;
 }
-
-export const DEMO_PREFIX = DEMO_URL_PREFIX;

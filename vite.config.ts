@@ -3,24 +3,11 @@ import react from '@vitejs/plugin-react';
 import tailwindcss from '@tailwindcss/vite';
 
 // https://vite.dev/config/
+// 没有 dev server.proxy：/api/fetch 与 /api/data 只在 EdgeOne Pages 上存在（node-functions/），
+// 本机 dev 抓不到真实正文（预览域对非签名请求一律 401，代理过去也没用），
+// 会自动降级到 r.jina.ai / 公共代理链；要验完整链路就在云上页面测（见 README 部署说明）。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
-  server: {
-    // 开发期把 /api/fetch 与 /api/data 都转给本机服务（npm run relay，默认 127.0.0.1:8787）。
-    // 这样浏览器只跟同源的 5173 说话，前端代码里的地址在生产/开发是同一个写法。
-    // 中转没启动时代理回 500，fetch.ts 会自动降级到下一条通道（r.jina.ai），不阻塞导入；
-    // /api/data 在本机是文件存储（.eatmap-sync/），与云上 Blob 跑同一份 syncCore 判定。
-    proxy: {
-      '/api/fetch': {
-        target: process.env.RELAY_ORIGIN || 'http://127.0.0.1:8787',
-        changeOrigin: false,
-      },
-      '/api/data': {
-        target: process.env.RELAY_ORIGIN || 'http://127.0.0.1:8787',
-        changeOrigin: false,
-      },
-    },
-  },
   test: {
     // fake-indexeddb 在测试文件顶部注入，环境用 node 即可（无 DOM 依赖）
     environment: 'node',

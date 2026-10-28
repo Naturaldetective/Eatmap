@@ -2,8 +2,8 @@
  * 云端同步的服务端逻辑（§3.4 的云上形态 / §4.6）。
  *
  * 与中转（relayCore）同一套架构约定：**纯逻辑、不感知运行时**，
- * 存储通过 SyncStore 注入 —— 云上用 EdgeOne Blob，本机 dev 用文件，
- * 两边跑的是同一份判定代码，不会出现「本地好的、云上不一样」。
+ * 存储通过 SyncStore 注入 —— 云上是 EdgeOne Blob（node-functions/api/data.ts），
+ * 单测注入内存实现，两边跑的是同一份判定代码。
  *
  * 为什么不用平台锁：@edgeone/pages-blob 的 set(key, v, { onlyIfNew }) 在类型定义里
  * 明确标了 @deprecated（底层不强制，已存在的 key 照样覆盖），所以并发只能自己管：
@@ -34,7 +34,7 @@ const MAX_VIDEOS = 50_000;
 /** 同步接口放开的跨源方法（中转只有 GET，两者不要共用一份方法表） */
 const SYNC_METHODS = 'GET, PUT, DELETE, OPTIONS';
 
-/** 注入的存储：云上 Blob / 本机文件都实现这三个方法即可 */
+/** 注入的存储：云上 Blob 实现这三个方法即可（单测用内存 map） */
 export interface SyncStore {
   get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<void>;

@@ -2,7 +2,7 @@
 
 > 一个纯前端的「美食/游玩地图」应用：导入小红书或微信公众号视频链接 → 自动识别城市并分类（吃 / 玩）→ 在地图上按城市展示符号，点击跳转原视频 → 根据各城市导入的视频数量排序，推荐游玩城市。
 >
-> 部署：Vercel（纯静态站点）；数据：全部存放在浏览器 IndexedDB，**无后端、无服务器数据库**。
+> 部署：**EdgeOne Pages（纯静态站 + node-functions）**，当前只在这个平台跑通；数据：主存储在各浏览器 IndexedDB，可选开云端同步（§4.6）。
 
 ---
 
@@ -49,9 +49,8 @@
 
 ### 1.3 明确的设计约束（先说清楚，避免后期返工）
 
-1. **数据只在浏览器本地**：IndexedDB 绑定「域名 + 浏览器 + 浏览器用户配置」，换设备/换浏览器/清缓存即丢失。因此 F6 的导出/导入 JSON 是**必须**做的备份通道，不是可选功能。
-2. **无服务端部署**：项目本体是纯静态站。但浏览器里 fetch 拿不到小红书正文（§4.3），所以抓取那一跳可以跑在
-   **用户本机**的一个中转上（§4.5，`npm run relay`，只绑 127.0.0.1、不存任何数据、可不用）。它不是服务，也不改变「数据只在本地」这条约束。
+1. **默认数据只在浏览器本地**：IndexedDB 绑定「域名 + 浏览器 + 浏览器用户配置」，换设备/换浏览器/清缓存即丢失。因此 F6 的导出/导入 JSON 是**必须**做的备份通道，不是可选功能；跨设备则靠可选的云端同步（§4.6，不设口令就仍然纯本地）。
+2. **本体是纯静态站，服务端只有两个同源函数**：浏览器里 fetch 拿不到小红书正文（§4.3），所以抓取那一跳必须在浏览器外面跑 —— 它就是站点自己的函数 `/api/fetch`（§4.5）；同步走 `/api/data`（§4.6）。两者都只存在于 EdgeOne Pages，本机 dev 没有这两个路径。
 3. **不存储视频本身**：只存链接 URL + 元信息，点击跳转到原平台，无版权与存储压力。
 
 ---
@@ -60,14 +59,14 @@
 
 | 领域 | 选型 | 理由 |
 |---|---|---|
-| 框架 | React 19 + TypeScript + Vite | 生态成熟，Vite 构建产物纯静态，天然适配 Vercel |
+| 框架 | React 19 + TypeScript + Vite | 生态成熟，Vite 构建产物纯静态，天然适配静态托管 + 函数目录的形态 |
 | 地图 | Leaflet + `react-leaflet`，底图用高德瓦片（GCJ-02） | 免费无需 token（对比 Mapbox/Google 需注册）；高德瓦片在国内网络可用；中国城市坐标统一用高德/腾讯体系的 GCJ-02，避免坐标偏移 |
 | 本地数据库 | `idb`（IndexedDB 的轻量 Promise 封装） | 数据量目标 <1万条，IndexedDB 完全够用；localStorage 5MB 限制且是同步 API，不选 |
 | UI 组件 | Tailwind CSS + 少量自绘组件（或 shadcn/ui） | 保持轻量 |
 | 城市数据 | 内置 `cities.json`（743 条地级市+县级市，含别名），由 DataV.GeoAtlas 权威区划数据生成（见 §5.1）| 无后端也能离线完成「城市名→坐标」转换 |
 | 视频分类 | 规则 + 词频打分（纯前端，见 §5） | 不上大模型：无后端、零成本、可解释、可人工纠正 |
-| 跨域中转 | 无头渲染中转 `r.jina.ai`（主）+ 公共 CORS 代理（公众号兜底），均不可用时降级为分享文案/页签取词/手动录入（见 §4.3） | 解决浏览器跨域，依旧零后端（不自己养服务） |
-| 部署 | Vercel（Static 项目，`vercel.json` SPA rewrite） | 用户指定 |
+| 跨域抓取 | 站点自己的同源函数 `/api/fetch`（`node-functions/api/fetch.ts`，唯一运行位置，§4.5）+ r.jina.ai 与公共 CORS 代理（降级），全不可用时走分享文案/页签取词/手动录入（§4.3） | 浏览器发不出小红书愿意回正文的那个请求（请求指纹，§4.3），必须有一跳在浏览器外面 |
+| 部署 | EdgeOne Pages（静态站 + `node-functions/`，§4.5 / §4.6） | 当前唯一跑通的平台；平台还提供 Blob 存储当同步后端 |
 
 > ⚠️ 不用 AMap/百度地图 JS SDK 的原因：需要开发者 key、配额管理，且 Leaflet + 高德瓦片已满足「打点 + 点击」的全部需求。若后续要行政区边界、POI 搜索再引入高德 Web 服务 API。
 
@@ -158,11 +157,11 @@ interface SyncMetaRecord {                                          // 只一行
   入库标题一律剥掉「 - 小红书」站点后缀（`cleanTitle`）。
 - 公众号：`<meta property="og:title">`、`og:description`，兜底 `msg_title` / `#activity-name` 文本。
 
-### 4.3 跨域对策（无后端的现实方案，按顺序降级）
+### 4.3 跨域对策（按顺序降级）
 
 1. **直连尝试** `fetch(url)` —— 少数环境可用，作为第一试。
-2. **自托管中转服务（当前主力通道，§4.5）**：本机 `npm run relay` 起 `127.0.0.1:8787`，vite 把 `/api/fetch` 代理过去，
-   前端仍按同源地址调用。它不回 HTML 而是回**结构化 JSON**（`FetchHtmlResult.meta`）：正文未截断、
+2. **中转函数（当前主力通道，§4.5）**：站点自己的同源函数 `/api/fetch`（云上 node-functions），
+   地址已在代码里写死为同源相对路径，无需任何配置。它不回 HTML 而是回**结构化 JSON**（`FetchHtmlResult.meta`）：正文未截断、
    话题已归一（`#丹东美食[话题]#` → `#丹东美食#`，识别因此走 `tag` 来源而不是 `desc`）、封面是真图。
 3. **`https://r.jina.ai/{url}` + `x-return-format: html`**：第三方无头渲染中转，
    CORS 开放、境内可达（实测 1~3s）、无需 API key（匿名额度约 20 次/分钟，故 `RATE_LIMIT_MS=1200` 节流）。
@@ -199,66 +198,59 @@ interface SyncMetaRecord {                                          // 只一行
 
 按 `url` 唯一索引检测；重复时提示「已存在，跳过 / 覆盖」。短链先解析成长链再比对。
 
-### 4.5 自托管中转服务（`server/` + `scripts/relay.mjs`）
+### 4.5 中转函数（`server/` 纯逻辑 + `node-functions/api/fetch.ts`）
 
 「像不像真实导航」是服务端判的，而浏览器发出的请求一定带着改不了的禁止头（§4.3 第二次更正），
-所以这一跳必须挪到浏览器外面：
+所以这一跳必须挪到浏览器外面 —— 它就是站点自己的一个函数，与页面同源：
 
 ```
-浏览器 ──/api/fetch?url=<带 token 原链>──▶ vite proxy ──▶ 127.0.0.1:8787 ──node:https──▶ 小红书
-                                                              ◀── JSON {ok,platform,status,finalUrl,meta}
+浏览器 ──同源 /api/fetch?url=<带 token 原链>──▶ EdgeOne node-functions ──node:https──▶ 小红书
+                                            ◀── JSON {ok,platform,status,finalUrl,meta}
 ```
 
-三个文件，边界刻意切开：
+三个文件，边界刻意切开（**换平台只动最上面那层**）：
 
 | 文件 | 职责 | 为什么这么切 |
 |---|---|---|
 | `server/relayCore.ts` | 纯逻辑：域名白名单、注入三头、`__INITIAL_STATE__` 解析、退化到 og / `msg_title`、HTTP 请求与响应组装 | 不 import 任何 node 模块，所以能在 vitest 里用 stub 传输层单测（`server/relayCore.test.ts`，14 条） |
 | `server/relayNode.ts` | 传输层：`node:https` 原生请求 + 手动跟随重定向 | 换成 `global fetch` 就取不到正文，文件头已钉死这条注释 |
-| `scripts/relay.mjs` | 入口：`npm run relay`，只绑 `127.0.0.1:8787` | Node 26 能直接 import `.ts`（原生 type stripping，只允许可擦除语法），无需构建步骤 |
+| `node-functions/api/fetch.ts` | 平台适配：EdgeOne 的 `Request`/`Response` ↔ 上面两个，路由 `/api/fetch` | 必须是 **node-functions** 而不是 edge-functions（下表）；函数路由优先于静态资源，所以不会被回退成 `index.html` |
 
-安全与隐私约束（每条都有测试兜着）：
-
-- **目标域名白名单**（`www.xiaohongshu.com` / `xhslink.com` / `mp.weixin.qq.com`，仅 http(s)），白名单外一律 400 且**不发出请求** ——
-  否则本机服务就成了开放代理；配合只绑 127.0.0.1 才敢常开。
-- **重定向每一跳重新校验**白名单（防 SSRF 跳去 `169.254.169.254` / `127.0.0.1:8080`）。
-- 响应 `Cache-Control: no-store`：`xsec_token` 是凭证，不能被留在本机缓存里。
-- 日志只打 `host + pathname`，绝不落 token。
-- `Access-Control-Allow-Origin` 默认 `*`（本机自用）；设 `RELAY_ALLOWED_ORIGINS` 后精确回源 + `Vary: Origin`。
-
-前端侧（`src/ingest/relay.ts`）地址优先级：导入页手填（localStorage）> `VITE_RELAY_URL` > 默认 `/api/fetch`。
-`RelayBar` 拿一条不存在的白名单地址探活，**只认中转自己的 JSON 信封**（`relayProbeVerdict`）：
-400/502 只要信封在就算活，而「200 + HTML」算死 —— 纯静态托管会把未知路径回退成 `index.html` 并给 200，
-只看状态码会把「站点上根本没中转」报成绿灯（云上实测过：应答 200 · 111ms，回的却是首页）。
-另外中转已回 `Access-Control-Allow-Private-Network: true`，所以云上 https 页面也能直接填 `http://127.0.0.1:8787/api/fetch` 调本机那一跳。
-封面域 `sns-webpic-qc.xhscdn.com` 实测无防盗链（带不带 Referer 都 200），但站内给的是 `http://`，中转已升成 `https://`，否则被混合内容拦截。
-
-#### 云上形态：EdgeOne Pages 的 Node Functions
-
-线上部署在 EdgeOne Pages（`*.edgeone.cool`）时，中转放在 **`node-functions/`** 而不是 `edge-functions/`，
-理由就是 §4.3 那条指纹结论：
+为什么是 `node-functions/`：
 
 | 目录 | 运行时 | 能不能拿到正文 |
 |---|---|---|
 | `edge-functions/` | V8 / Service-Worker 风格，**只有 Web `fetch`** | 很可能跟 undici 一样只拿到壳（同一个坑） |
 | `node-functions/` | 真 Node.js，可用 `node:https` 与完整 npm | 能复用已验证的 `server/relayNode.ts` |
 
-接入方式（`node-functions/api/fetch.ts` → 路由 `https://<站点>/api/fetch`）：函数体只做平台适配，
-直接 import 同仓库的 `server/relayCore.ts` 与 `server/relayNode.ts`（**零副本，不漂移**），
-把 `RelayHttpResponse` 转成 `Response`；函数路由优先于静态资源，所以上面那个「被回退成首页」的问题自然消失。
+安全与隐私约束（每条都有测试兜着）：
 
-部署与约束：
+- **目标域名白名单**（`www.xiaohongshu.com` / `xhslink.com` / `mp.weixin.qq.com`，仅 http(s)），白名单外一律 400 且**不发出请求** ——
+  否则这个公开端点就变成了通用代理（白名单与「每跳复校」在服务端仍然生效，所以它能拿的只有三个域）。
+- **重定向每一跳重新校验**白名单（防 SSRF 跳去 `169.254.169.254` / 内网地址）。
+- 响应 `Cache-Control: no-store`：`xsec_token` 是凭证，不能被任何中间层缓存留下。
+- 日志只打 `host + pathname`，token 在 query 里，进不了日志。
+- `Access-Control-Allow-Origin` 默认 `*`（同源调用其实用不上 CORS）；设 `RELAY_ALLOWED_ORIGINS` 后精确回源 + `Vary: Origin`。
 
-- 本地调试：`npm i -g edgeone` 后在项目根跑 `edgeone pages dev`（http://localhost:8088）；推送到关联仓库即自动构建发布。
-- 环境变量在 Pages 项目设置里配：`RELAY_ALLOWED_ORIGINS`（建议填站点自己的源，否则默认 `*`）。
-- 域名白名单与「每跳复校」在服务端仍然生效，所以这个公开端点只能拿三个白名单域，不是通用代理。
-- **已验证（云上端到端跑通）**：机房出口 IP 没被小红书风控，函数路由确实优先于 SPA 回退，
-  `node-functions` 里 `../../server/...` 的相对 import 与 npm 依赖平台构建器能解析。
-  导入页状态条从「应答 200（回的首页 HTML，假绿灯）」变成「应答 502 · 中转信封」，
-  502 是探活用的假笔记地址取不到正文，属预期（见 §4.5 探活判定）。
+前端侧（`src/ingest/relay.ts`）**地址写死同源 `/api/fetch`，不可配**：函数与站点同源，再给一个输入框只是多一条能填错的路。
+`RelayBar` 拿一条不存在的白名单地址探活，**只认中转自己的 JSON 信封**（`relayProbeVerdict`）：
+400/502 只要信封在就算活，而「200 + HTML」算死 —— 纯静态托管会把未知路径回退成 `index.html` 并给 200，
+只看状态码会把「站点上根本没中转」报成绿灯（云上实测过：应答 200 · 111ms，回的却是首页）。
+封面域 `sns-webpic-qc.xhscdn.com` 实测无防盗链（带不带 Referer 都 200），但站内给的是 `http://`，中转已升成 `https://`，否则被混合内容拦截。
 
-> 另：Vercel 形态（`api/fetch.ts`）仍未做。它的 SPA rewrite `/(.*)` 会吞掉 `/api/*`，
-> 需先改成 `/((?!api/).*)`；EdgeOne Pages 因为函数路由优先，没这个问题。
+#### 已删除的本机形态（别再加回来）
+
+云上函数可用之前，这一跳跑在自己机器上：`scripts/relay.mjs`（`npm run relay`，只绑 `127.0.0.1:8787`）
++ vite `server.proxy` + 导入页的中转地址输入框（localStorage `eatmap.relayUrl`）+ 构建期变量 `VITE_RELAY_URL`
++ 为「云上页面调本机 127.0.0.1」而发的 `Access-Control-Allow-Private-Network` 头；
+同步侧还有 `.eatmap-sync/` 文件存储（`server/syncFileStore.ts`）与同步卡片的接口地址输入框。
+云上端到端验通之后这些全部删了 —— 同一份逻辑现在只有一个运行位置，少一条「本地好的、云上不一样」的分叉。
+
+代价（已知并接受）：`npm run dev` 抓不到真实正文，导入页灯是红的、同步卡片报「回的是网页」，自动降级到备用通道。
+需要本地跑真函数时用 `edgeone pages dev`（http://localhost:8088），完整链路只能在云上验。
+
+> 另：Vercel 形态仍未做。它的 SPA rewrite `/(.*)` 会吞掉 `/api/*`，需先改成 `/((?!api/).*)`；
+> EdgeOne Pages 因为函数路由优先，没这个问题。部署细节见 §8。
 
 ---
 
@@ -318,12 +310,6 @@ interface SyncMetaRecord {                                          // 只一行
 `App` 挂载与窗口 focus 时拉平，切到后台前推一次；导入页/数据页每次改动后 `scheduleSync()`
 （防抖 1.5s，批量导入只推一趟）。推之前比数据指纹，一致就不白推。
 删除标记保留 90 天（`SYNC_TTL_MS`）后清理 —— 某台设备离线超过这个窗口，会把别人早已删掉的记录拉回来。
-
-#### 本机 dev
-
-`npm run relay` 除了 `/api/fetch` 还挂 `/api/data`，存储是 `.eatmap-sync/` 下的文件
-（`server/syncFileStore.ts`，已 gitignore）；vite 把两个路径都代理过去。
-存在的唯一理由：让本地和云上跑**同一份 syncCore 判定**，不会出现「本地好的、云上不一样」。
 
 > 数据在公网上是按口令分开的**明文快照**，只放探店记录，别塞敏感信息。
 
@@ -466,22 +452,19 @@ travel 弱词（权重1）：玩、逛、看、风景、周末、假期、citywa
 eat-map/
 ├── index.html
 ├── vite.config.ts
-├── vercel.json               # SPA rewrite + 静态缓存策略
 ├── package.json
 ├── tsconfig.json             # references：app / node / server 三个 project
 ├── tsconfig.server.json      # server/ 带 @types/node，不与浏览器项目混（否则 node:https 破坏 app 类型检查）
 ├── scripts/
 │   ├── collect-cities.mjs    # 城市库采集（§5.1）
-│   ├── build-cities.mjs      # 城市库生成（§5.1）
-│   └── relay.mjs             # 本机中转入口：npm run relay（§4.5）
+│   └── build-cities.mjs      # 城市库生成（§5.1）
 ├── node-functions/           # 云上形态的服务端（EdgeOne Pages Node Functions，§4.5 / §4.6）
 │   ├── api/fetch.ts          # → /api/fetch，import 同一套 server/ 代码（零副本）
 │   └── api/data.ts           # → /api/data，读写 EdgeOne Blob 存储（存什么、为何不用 KV 见 §4.6）
 ├── server/                   # 浏览器外面那一跳（§4.5 / §4.6）
 │   ├── relayCore.ts          # 中转纯逻辑（零依赖、可单测）
 │   ├── relayNode.ts          # node:https 传输层
-│   ├── syncCore.ts           # 同步纯逻辑：口令哈希 / 快照校验 / rev 乐观并发（存储注入）
-│   ├── syncFileStore.ts      # 本机 dev 的 SyncStore（.eatmap-sync/，已 gitignore）
+│   ├── syncCore.ts           # 同步纯逻辑：口令哈希 / 快照校验 / rev 乐观并发（存储通过 SyncStore 注入）
 │   ├── relayCore.test.ts
 │   └── syncCore.test.ts
 ├── public/
@@ -523,28 +506,24 @@ eat-map/
 
 ---
 
-## 8. 部署
+## 8. 部署（当前仅在 EdgeOne Pages 跑通）
 
-> **线上实际跑在 EdgeOne Pages**（`*.edgeone.cool`），服务端代码是 `node-functions/`（§4.5 中转、§4.6 同步）。
-> 下面这套 Vercel 形态仍未做（包括 `api/fetch.ts` 与函数路由），只当备选方案保留。
+> **唯一验证过的平台是 Tencent Cloud EdgeOne Pages**。换别的静态托管要重新解决两件事：
+> ① `/api/*` 不能被 SPA 回退吞掉（函数路由必须优先于静态资源，否则就是 §4.5 那个「200 但回的是首页」的假绿灯）；
+> ② 得有真 Node 运行时能跑 `node:https`（§4.3 的请求指纹结论，edge-functions 的 V8 `fetch` 不行）。
+> Vercel 形态未做（它的 `/(.*)` rewrite 会吞掉 `/api/*`，得先改成 `/((?!api/).*)`），仓库里也不再保留 `vercel.json`。
 
-1. 仓库根目录 `vercel.json`：
-
-```json
-{
-  "framework": "vite",
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }],
-  "headers": [
-    { "source": "/assets/(.*)",
-      "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }] }
-  ]
-}
-```
-
-2. 本地验证：`npm run build && npm run preview`，确认生产构建无报错。
-3. 首次部署：`npm i -g vercel` → `vercel`（关联项目）→ `vercel --prod`。或推 GitHub 后在 Vercel 控制台 Import，Build Command `npm run build`，Output `dist`。
-4. 域名：`*.vercel.app` 在中国大陆直连不稳定。若地图瓦片/访问体验差，备选：绑定自有域名，或底图瓦片再准备一套 OSM 备选源（代码里 `TILE_LAYERS` 做成可切换）。
-5. 提醒用户（README/关于页）：主存储在本浏览器，但可在「数据页」设空间口令自动上云（§4.6）；没设口令时清缓存仍会丢，导出 JSON 仍是兼底。
+1. 发布：推送到 Pages 关联的仓库即自动构建（Build Command `npm run build`，Output `dist`）。
+   `node-functions/` 由平台自动识别为函数并接上路由（`api/fetch.ts` → `/api/fetch`，`api/data.ts` → `/api/data`），
+   不需要单独的函数配置；Blob 命名空间首次 `getStore('eatmap')` 自动创建，控制台零开通步骤。
+2. 环境变量（Pages 项目设置里，可省）：`RELAY_ALLOWED_ORIGINS` —— 中转与同步接口**共用**这个 CORS 允许源，
+   不填默认 `*`。
+3. 本地验证：`npm run build && npm run preview` 只验静态构建；函数里的判定逻辑靠单测验（`server/*.test.ts`，core 不感知运行时，测的就是云上那份），
+   完整链路（真实抓取 + Blob 读写）只能在云上验，或用 `edgeone pages dev` 在本地跑真函数。
+4. **预览域 `*.edgeone.cool` 带时效签名，命令行 curl 一律 401**（`X-EOP-MSG: eo_time missing`），
+   所以别拿 curl 判定函数挂没挂 —— 要么在浏览器里测，要么绑正式域名。
+5. 域名：`*.edgeone.cool` 是预览域名且有有效期，生产要绑自有域名；绑域名后 `TILE_LAYERS` 可切换备选瓦片源。
+6. 提醒用户（README/关于页）：主存储在本浏览器，但可在「数据页」设空间口令自动上云（§4.6）；没设口令时清缓存仍会丢，导出 JSON 仍是兜底。
 
 ---
 
@@ -558,7 +537,7 @@ eat-map/
 | M3 | 识别与分类：城市识别、吃/玩打分、置信度标记 | 10 条样例链接 ≥8 条城市正确、≥7 条分类正确 |
 | M4 | 地图交互：城市气泡、抽屉列表、点击跳转、筛选 | 端到端：导入→图上出现→点击→跳转 |
 | M5 | 推荐榜单 + 数据管理（编辑/删除/导出/导入） | 排序符合 food 权重规则；导出文件可回灌 |
-| M6 | 词表与别名迭代（用真实误判样本回灌 lexicon/cities aliases）、部署上线 | Vercel 生产域名可访问 |
+| M6 | 词表与别名迭代（用真实误判样本回灌 lexicon/cities aliases）、部署上线 | 生产域名可访问（已达成：EdgeOne Pages，中转与同步均云上实测） |
 
 ---
 
@@ -568,16 +547,17 @@ eat-map/
 |---|---|---|
 | 小红书分享链必须带 xsec_token（~~曾误判为「登录墙不可绕过」~~，见 §4.3） | 去 token 的裸地址必被踢到 404 | 抓取用原地址、入库去 token；token 过期时走分享文案 / 页签取词 / 手动三条兜底 |
 | ~~app_share 的 token 在 web 端强制登录~~（第二次误判，已证伪，见 §4.3） | 曾经把本来能成功的链接提前判失败 | 早退已删除；真门槛是请求头三件套 + `node:https`，由中转代跑 |
-| 抓取主力是自托管中转，得本机开着 `npm run relay` | 忘了启动就降级 r.jina.ai → 公共代理 | `RelayBar` 状态灯常驻导入页；地址可手填成已部署的中转（存 localStorage） |
+| 抓取完全依赖站点自己的 `/api/fetch` 函数（平台侧改动 / 函数没接上路由时是静默变哑） | 降级 r.jina.ai → 公共代理，正文质量下降（截断 og + 站点 logo 当封面）但不至于不能用 | `RelayBar` 状态灯常驻导入页，能识别「200 + 回了个网页」这种被 SPA 回退吞掉的情况（只看状态码会误报绿灯）；路由与 env 见 §8 |
 | r.jina.ai 是外部依赖（匿名约 20 次/分钟，可能限流或下线） | 批量导入变慢或需降级 | 每通道独立超时 + 失败切换；`RATE_LIMIT_MS=1200` 节流；失败行给「重试 / 取词 / 手动」三条出口 |
-| 数据只在单浏览器 | 换设备丢失、清缓存丢失 | ~~只靠导出 JSON~~ → 已上云：空间口令 + EdgeOne Blob 快照自动同步（§4.6）；导出/导入仍作兼底 |
+| 数据只在单浏览器 | 换设备丢失、清缓存丢失 | ~~只靠导出 JSON~~ → 已上云：空间口令 + EdgeOne Blob 快照自动同步（§4.6）；导出/导入仍作兜底 |
 | 同步接口 `/api/data` 公开可调 | 没口令的人乱写会污染 Blob（但进不了你的空间：目录按口令哈希分） | 快照服务端校验 + 8MB 体积上限 + 50_000 条上限；口令当密码保管（丢了 = 云上那份找不回） |
 | 多设备同时写（rev 冲突靠重试收敛） | 极端情况下一次推送要重试 2 次，超过就报错 | 409 带回服务端快照由客户端合并后重试；自用单主写入场景几乎碰不到 |
 | 删除标记只存 90 天（`SYNC_TTL_MS`） | 某设备离线超窗口会把别人早已删的记录拉回来 | 长期多端就调大窗口；或先拉后推、不要长期离线 |
-| EdgeOne Blob 默认 60s 最终一致 | rev 比对拿到旧值 → 误判冲突 | 读写全走 `consistency: 'strong'`，响应恒 `no-store` |
+| EdgeOne Blob 默认 60s 最终一致 | rev 比对拿到旧值 → 误判冲突 | 读写全走 `consistency: 'strong'`，响应恒 `no-store`；**已云上实测**：PUT 得 rev:1 后立刻 GET 即读到 rev:1，未出现旧值 |
 | 城市识别歧义（「海口」、「天津大学」类文本） | 误关联 | 通名上下文黑名单 + 同级才算歧义 + 置信度标黄人工复核；别名表持续迭代 |
 | 分类误判（吃玩混合视频） | 排序偏差 | 允许人工修改且 manual 不被覆盖；混合时默认偏「吃」 |
-| vercel.app 域名大陆访问不稳 | 地图打不开 | 绑定自定义域名；瓦片源可切换 |
+| 只在 EdgeOne Pages 一个平台验证过（函数目录名、Blob SDK、路由优先级都是平台特性） | 换平台得重做 §4.5/§4.6 的适配层 | 逻辑全在 `server/`（不感知运行时），新平台只需再写一个薄适配；§8 列了换平台必答的两题 |
+| 预览域 `*.edgeone.cool` 带时效签名且对 curl 一律 401 | 无法用 curl/脚本做回归，只能浏览器人工测 | 绑自有域名后可自动化；探活判定已改成只认 JSON 信封（§4.5） |
 | 小红书分享链带过期 token 参数 | 去重误判 | 入库前规范化 URL（strip query 中的临时参数，保留 noteId） |
 
 ---
@@ -589,9 +569,8 @@ npm create vite@latest eat-map -- --template react-ts
 cd eat-map
 npm i leaflet react-leaflet idb
 npm i -D tailwindcss @types/leaflet
-npm run dev        # 本地开发 http://localhost:5173
-npm run relay      # 另开一个终端：本机中转 127.0.0.1:8787（§4.5，抓取主力通道）
+npm run dev        # 本地开发 http://localhost:5173（只跑前端：无 /api/fetch 与 /api/data，灯红属预期）
 npm test           # vitest run（含 server/relayCore.test.ts 的无网络单测）
 npm run build      # 生产构建 → dist/
-vercel --prod      # 部署
+# 发布：推送到 EdgeOne Pages 关联仓库自动构建（§8），本地调函数可用 `edgeone pages dev`
 ```

@@ -4,6 +4,10 @@
 
 设计与决策的完整记录在 [DEVELOPMENT.md](./DEVELOPMENT.md)，这份 README 只讲怎么用、为什么这么设计。
 
+> **部署：当前仅在腾讯 EdgeOne Pages 跑通**（静态站 + `node-functions/` 函数，路由 `/api/fetch` 与 `/api/data`）。
+> 两个能力都依赖平台特性：**函数路由优先于 SPA 回退** + **真 Node 运行时**（能跑 `node:https`，§「为什么需要中转」）。
+> 换别的托管要先解决这两件事（清单见 DEVELOPMENT.md §8），**Vercel 形态未做**（它的 `/(.*)` rewrite 会吞掉 `/api/*`）。
+
 ## 功能
 
 | 页面 | 路由 | 作用 |
@@ -21,18 +25,17 @@
 
 ```bash
 npm install
-npm run relay      # 另开一个终端：本机中转服务，监听 127.0.0.1:8787
 npm run dev        # http://localhost:5173
 npm test           # vitest run
-npm run build      # 生产构建 → dist/（纯静态，可直接托管）
+npm run build      # 生产构建 → dist/（推上 EdgeOne Pages 即发布）
 ```
 
-Node 26 起（`npm run relay` 直接 import `.ts`，无需构建中转）。中转只绑 `127.0.0.1`，不监听对外地址。
+本机 dev 只跑前端：`/api/fetch` 与 `/api/data` 是站点自己的 EdgeOne Functions，本机没有，
+所以导入页那盏中转灯在本地是红的、同步卡片会报「同步接口回的是网页」——都属预期，
+抓取会自动降级到备用通道，不阻塞改样式与改识别规则。要验完整链路就 `npm run build` 后推到 EdgeOne 上测
+（本地也可用 `edgeone pages dev` 跑真函数）。
 
-relay 同时挂两个端点：`/api/fetch`（抓取中转）与 `/api/data`（云端同步，本机存在 `.eatmap-sync/` 文件里，已 gitignore）；
-vite 把两个路径都代理过去。不跑 relay 也能用：进页会探活，不通自动降级；云上则两个端点都由 EdgeOne Functions 提供（见下）。
-
-## 抓取为什么需要一个本机中转
+## 抓取为什么需要中转
 
 浏览器里发不出小红书愿意回正文的那个请求：
 
@@ -40,27 +43,30 @@ vite 把两个路径都代理过去。不跑 relay 也能用：进页会探活�
 - 浏览器内的 `fetch` 一定带 `Sec-Fetch-Dest: empty`（禁止头，JS 删不掉），同源也拿不到正文。
 - Node 的 `global fetch`（undici）同一组头也只拿到壳——差异在请求指纹（header 名被全小写、顺序固定）。只有 `node:https` 原生请求给出 70KB 正文。
 
-所以抓取这一跳放到浏览器外面：
+所以抓取这一跳放到浏览器外面，由站点自己的函数代跑（与页面同源）：
 
 ```
-浏览器 ──/api/fetch?url=<带 xsec_token 的原链>──▶ vite proxy ──▶ 127.0.0.1:8787 ──node:https──▶ 平台
-                                                              ◀── JSON { ok, platform, status, finalUrl, meta }
+浏览器 ──同源 /api/fetch?url=<带 xsec_token 的原链>──▶ EdgeOne node-functions ──node:https──▶ 平台
+                                                    ◀── JSON { ok, platform, status, finalUrl, meta }
 ```
 
 `meta` 是结构化元数据（未截断正文、话题归一成 `#丹东美食#`、真实封面已升 https），前端直接跳过 HTML 解析。中转不可达时自动降级：中转 → r.jina.ai → 公共 CORS 代理 → 分享文案粘贴 → 页签取词 → 手动录入。
 
-安全约束：目标域名白名单（小红书 / xhslink / 公众号，仅 http(s)），白名单外一律 400 且不发请求；跟随重定向时每一跳复校白名单；响应 `Cache-Control: no-store`（`xsec_token` 是凭证，不留本机缓存）；日志只打 `host + pathname`，不落 token。
+安全约束：目标域名白名单（小红书 / xhslink / 公众号，仅 http(s)），白名单外一律 400 且不发请求；跟随重定向时每一跳复校白名单；响应 `Cache-Control: no-store`（`xsec_token` 是凭证，不留任何缓存）；日志只打 `host + pathname`，不落 token。
 
-云上形态已跑通：同一套代码放在 `node-functions/api/fetch.ts`（EdgeOne Pages Node Functions，路由 `/api/fetch`），
-直接 import `server/` 里那套，**零副本**；推送到关联仓库即自动发布，不依赖本机终端。
+代码分三层（**换平台只动最上面那层**）：
 
-配置项（都可省）：
+| 层 | 文件 | 职责 |
+| --- | --- | --- |
+| 判定 | `server/relayCore.ts` | 零依赖纯逻辑：白名单、每跳复校、meta 解析、CORS（可单测、不碰网络） |
+| 传输 | `server/relayNode.ts` | `node:https` 原生请求（上面的指纹结论落在这） |
+| 适配 | `node-functions/api/fetch.ts` | EdgeOne 的 `Request`/`Response` ↔ 上面两个，路由 `/api/fetch` |
+
+配置项（可省）：
 
 | 项 | 作用 |
 | --- | --- |
-| `RELAY_ALLOWED_ORIGINS` | 设了就精确回源 + `Vary: Origin`，不设默认 `*`（本机自用） |
-| `VITE_RELAY_URL` | 构建期指定中转地址 |
-| 导入页的中转输入框 | 存在 localStorage（`eatmap.relayUrl`），优先级最高，方便指向已部署的中转 |
+| `RELAY_ALLOWED_ORIGINS` | Pages 项目环境变量，中转与同步接口**共用**；设了就精确回源 + `Vary: Origin`，不设默认 `*`（同源调用无所谓） |
 
 抓取必须用**带 token 的原地址**，入库/去重才用剥掉 token 的规范地址——两条地址由 `splitLinks()` 一次产出，别混用（裸地址必被踢 404）。
 
@@ -69,19 +75,19 @@ vite 把两个路径都代理过去。不跑 relay 也能用：进页会探活�
 ```
 eat-map/
 ├── src/
-│   ├── ingest/       # 链接解析、抓取管线、中转地址配置、城市识别、分类（全是纯函数）
+│   ├── ingest/       # 链接解析、抓取管线、中转探活、城市识别、分类（全是纯函数）
 │   ├── db/           # IndexedDB 表定义与 CRUD + 聚合，唯一的数据入口
 │   ├── sync/         # 云端同步：merge.ts（合并规则）/ cloud.ts（拉推调度）/ SyncCard.tsx
 │   ├── map/ pages/ ui/
 │   └── data/cities.json   # 由 scripts/build-cities.mjs 生成
-├── server/           # 浏览器外面那一跳：relayCore/relayNode（抓取）+ syncCore/syncFileStore（同步）
-├── node-functions/   # 云上服务端：api/fetch.ts（中转）+ api/data.ts（同步，读写 EdgeOne Blob）
-├── scripts/          # relay.mjs 入口；城市库采集与生成
+├── server/           # 浏览器外面那一跳的纯逻辑：relayCore/relayNode（抓取）+ syncCore（同步）
+├── node-functions/   # 云上服务端（唯一运行位置）：api/fetch.ts（中转）+ api/data.ts（同步，读写 EdgeOne Blob）
+├── scripts/          # 城市库采集与生成
 └── DEVELOPMENT.md    # 数据模型、识别规则、跨域对策、云端同步、视觉规范、部署、风险表的完整记录
 ```
 
-服务端代码只有一套：`node-functions/` 直接 import `server/` 里的纯逻辑，本机 relay 与云上函数跑同一份判定，
-不会出现「本地好的、云上不一样」。
+服务端只有一套逻辑：`node-functions/` 直接 import `server/` 里的纯逻辑（零副本），
+换平台只需要再写一个薄适配层，不用重测判定。
 
 ## 数据与隐私
 
@@ -94,11 +100,12 @@ eat-map/
 - **口令本身不上网，上网的是它的哈希**，哈希等价于 bearer 凭证 —— 口令要当密码保管，忘了云上那份就找不回；
 - 数据在公网上是**明文快照**（只是按口令分开），只放探店记录，别塞敏感信息；不想开就不填口令，行为跟纯本地一致。
 
-本地兼底：导出 / 导入 JSON 仍是标配流程，没设口令时清缓存依旧会丢。
+本地兜底：导出 / 导入 JSON 仍是标配流程，没设口令时清缓存依旧会丢。
 
 ## 已知局限
 
-- 主力抓取通道是自己机器上的中转，忘了 `npm run relay` 就退到 r.jina.ai（匿名约 20 次/分钟）。
-- ~~部署版中转未做~~ → 已上线：EdgeOne Pages `node-functions/api/fetch.ts`（机房出口 IP 未被风控，函数路由优先于 SPA 回退）；Vercel 形态仍未做（SPA rewrite 会吞 `/api/*`）。
+- 抓取主力通道是站点自己的函数，只在 EdgeOne Pages 上存在；本机 dev 跑不到它，自动降级到 r.jina.ai（匿名约 20 次/分钟）。
+- ~~部署版中转未做~~ → 已上线：EdgeOne Pages `node-functions/api/fetch.ts`（机房出口 IP 未被风控，函数路由优先于 SPA 回退）；同步接口 `node-functions/api/data.ts` 同样已云上实测。**仅这一个平台验证过**，Vercel 形态仍未做（SPA rewrite 会吞 `/api/*`）。
+- 预览域 `*.edgeone.cool` 带时效签名，**命令行 curl 一律 401**（回的是鉴权页），所以函数挂没挂只能在浏览器里看，curl 探不出来。
 - 同步接口 `/api/data` 本身公开可调，靠「目录按口令哈希分开」保护；多设备并发写靠 rev 冲突重试收敛。
 - 城市库来自阿里 DataV.GeoAtlas，台湾省文件 404 暂不收录；识别是词法匹配，歧义靠置信度标黄 + 人工复核兜底。

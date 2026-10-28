@@ -1,7 +1,7 @@
 import type { CityRecord } from '../db/schema';
 
 /** 匹配词条：城市名或别名。isName=标准名（置信度高于别名） */
-export interface CityTerm {
+interface CityTerm {
   term: string;
   code: string;
   isName: boolean;
@@ -32,7 +32,7 @@ export interface GeoCandidate {
   isName: boolean;
 }
 
-export interface GeoResult {
+interface GeoResult {
   cityCode: string;
   /** <0.6 在 UI 标黄提示复核（§5.1） */
   confidence: number;

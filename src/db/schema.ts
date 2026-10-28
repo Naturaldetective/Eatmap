@@ -6,7 +6,7 @@ import { openDB, type DBSchema, type IDBPDatabase } from 'idb';
 
 export type Platform = 'xiaohongshu' | 'wechat';
 export type Category = 'food' | 'travel' | 'unknown';
-export type CategorySource = 'auto' | 'manual';
+type CategorySource = 'auto' | 'manual';
 
 export interface VideoRecord {
   id: string;
@@ -77,8 +77,8 @@ interface EatmapSchema extends DBSchema {
   };
 }
 
-export const DB_NAME = 'eatmap';
-export const DB_VERSION = 2;
+const DB_NAME = 'eatmap';
+const DB_VERSION = 2;
 
 let dbPromise: Promise<IDBPDatabase<EatmapSchema>> | null = null;
 
@@ -139,9 +139,4 @@ export function seedCities(): Promise<number> {
 export async function getAllCities(): Promise<CityRecord[]> {
   const db = await getDB();
   return db.getAll('cities');
-}
-
-export async function getCity(code: string): Promise<CityRecord | undefined> {
-  const db = await getDB();
-  return db.get('cities', code);
 }

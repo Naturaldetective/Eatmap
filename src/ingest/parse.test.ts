@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { detectPlatform, normalizeUrl, parseShareText, splitLinks, splitLines } from './parse';
+import { detectPlatform, normalizeUrl, parseShareText, splitLinks } from './parse';
 
 describe('分享文案解析（免抓取路径）', () => {
   it('小红书 App 分享文案：标题/短链/标签分离', () => {
@@ -57,7 +57,7 @@ describe('URL 规范化（§4.4 去重前提）', () => {
     expect(normalizeUrl(a)).toBe('https://mp.weixin.qq.com/s?__biz=MzA5&mid=265');
   });
 
-  it('splitLines：混在文案里的链接也能提取，去重保序后返回可抓取地址（留着 token）', () => {
+  it('splitLinks：混在文案里的链接也能提取，按 norm 去重保序（同笔记不同 token 算一条）', () => {
     const text = [
       '看看这家店 https://www.xiaohongshu.com/explore/aaa?xsec_token=1 太好吃了',
       '',
@@ -65,10 +65,10 @@ describe('URL 规范化（§4.4 去重前提）', () => {
       'https://mp.weixin.qq.com/s/bbb',
       '没有链接的一行',
     ].join('\n');
-    // 去 token 的 norm 只能用于去重，拿去抓取必被踢 404，所以旧签名的输出必须留着 token
-    expect(splitLines(text)).toEqual([
-      'https://www.xiaohongshu.com/explore/aaa?xsec_token=1',
-      'https://mp.weixin.qq.com/s/bbb',
+    // 去 token 的 norm 只能用于去重，拿去抓取必被踢 404，所以抓取用 raw（留着 token）
+    expect(splitLinks(text)).toEqual([
+      { norm: 'https://www.xiaohongshu.com/explore/aaa', raw: 'https://www.xiaohongshu.com/explore/aaa?xsec_token=1' },
+      { norm: 'https://mp.weixin.qq.com/s/bbb', raw: 'https://mp.weixin.qq.com/s/bbb' },
     ]);
   });
 

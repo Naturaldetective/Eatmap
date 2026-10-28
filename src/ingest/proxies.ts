@@ -19,7 +19,7 @@ export interface CorsProxy {
 export const CORS_PROXIES: CorsProxy[] = [
   {
     name: '中转服务',
-    // 自己养的一跳（本机 npm run relay，或部署后的同名函数）：
+    // 站点自己的函数（同源 /api/fetch，云上 node-functions 提供）：
     // 在浏览器外面把「真实导航」那副头凑齐，实测 app_share 长链也能拿到全文 + 真封面
     to: (t) => relayEndpoint(t, 'meta'),
     metaJson: true,

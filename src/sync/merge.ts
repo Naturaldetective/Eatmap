@@ -22,7 +22,7 @@ export interface CloudSnapshot {
   deleted: Record<string, number>;
 }
 
-export interface MergeInput {
+interface MergeInput {
   local: VideoRecord[];
   /** 云端快照；null = 空空间（首次上传） */
   remote: CloudSnapshot | null;

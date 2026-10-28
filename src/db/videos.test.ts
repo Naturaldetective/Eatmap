@@ -1,5 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
+import type { VideoRecord } from './schema';
 import {
   addVideo,
   countByCity,
@@ -16,7 +17,6 @@ import {
   getDB,
   type AddResult,
   type NewVideo,
-  type VideoRecord,
 } from './videos';
 
 /** 新增必然成功（重复则抛错），便于测试里拿到 VideoRecord 类型 */

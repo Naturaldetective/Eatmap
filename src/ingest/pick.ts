@@ -25,7 +25,7 @@ export function buildPickScript(): string {
 })()`;
 }
 
-export type PickedMeta = VideoMeta & { url?: string };
+type PickedMeta = VideoMeta & { url?: string };
 
 function toPicked(o: Record<string, unknown>): PickedMeta | null {
   const title = typeof o.title === 'string' ? o.title.trim() : '';

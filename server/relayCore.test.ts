@@ -170,15 +170,14 @@ describe('中转的 HTTP 信封', () => {
     expect(locked.headers.Vary).toBe('Origin');
   });
 
-  it('云上 https 页面直连本机：响应与预检都要带 PNA 头', async () => {
-    const res = await handleRelayRequest(
-      { url: NOTE_URL, origin: 'https://eatmap-dpojxxeywur9.edgeone.cool' },
-      stubFetcher({ html: NOTE_HTML }),
-    );
-    // Chrome 的私有网络访问预检不回这个头就直接拦（云上页面 → 127.0.0.1）
-    expect(res.headers['Access-Control-Allow-Private-Network']).toBe('true');
+  it('预检头：允许头回显客户端报上来的列表，方法由调用方定（中转只读，同步要写）', () => {
     const pre = relayCorsHeaders('https://eatmap-dpojxxeywur9.edgeone.cool', {}, 'x-eatmap-probe');
     expect(pre['Access-Control-Allow-Headers']).toBe('x-eatmap-probe');
-    expect(pre['Access-Control-Allow-Private-Network']).toBe('true');
+    expect(pre['Access-Control-Allow-Methods']).toBe('GET, OPTIONS');
+    expect(
+      relayCorsHeaders('https://eatmap-dpojxxeywur9.edgeone.cool', {}, 'content-type', 'GET, PUT, DELETE, OPTIONS')[
+        'Access-Control-Allow-Methods'
+      ],
+    ).toBe('GET, PUT, DELETE, OPTIONS');
   });
 });

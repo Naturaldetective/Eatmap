@@ -1,7 +1,6 @@
 import { getDB, type Category, type VideoRecord } from './schema';
 
-export type { Category, CityRecord, SyncMetaRecord, Tombstone, VideoRecord } from './schema';
-export { seedCities, getAllCities, getCity, getDB } from './schema';
+export { seedCities, getAllCities, getDB } from './schema';
 
 /** addVideo 的返回结合类型（导出供测试/调用方收窄） */
 export type AddResult = { ok: true; video: VideoRecord } | { ok: false; existing: VideoRecord };

@@ -12,9 +12,6 @@ dist
 dist-ssr
 *.local
 
-# 本机 dev 的云端同步存储（npm run relay 的 /api/data 落这里，等同用户数据）
-.eatmap-sync
-
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

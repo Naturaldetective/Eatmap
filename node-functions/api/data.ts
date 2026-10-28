@@ -6,12 +6,12 @@
  * 平台没有托管数据库，Blob 的 key 前缀就是我们的「表」（spaces/<spaceId>/state.json）。
  *
  * 与中转同一个结论：放 node-functions 而不是 edge-functions ——
- * 这里要 import 的 SDK 走 npm 依赖，且逻辑与本机 dev（scripts/relay.mjs 的 /api/data）
- * 共用 server/syncCore.ts，零副本。
+ * 这里要 import 的 SDK 走 npm 依赖，且逻辑与前端共用一套约定：
+ * 判定全在 server/syncCore.ts（纯逻辑、可单测），本文件只做平台适配。
  *
  * 路由：本文件 → `https://<站点>/api/data`。
- * 本地调试：`edgeone pages dev`（http://localhost:8088）；日常开发其实用 `npm run relay`
- * 那条路就够了（同一套 core，行为一致）。
+ * 本地调试：`edgeone pages dev`（http://localhost:8088）；`npm run dev` 本机没有这个路径，
+ * 同步卡片会报「同步接口回的是网页」，属预期（完整链路只能在云上验）。
  */
 import { getStore } from '@edgeone/pages-blob';
 import { handleSyncRequest, SYNC_BLOB_STORE } from '../../server/syncCore';

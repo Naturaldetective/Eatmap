@@ -7,9 +7,9 @@ export interface VideoMeta {
 }
 
 /** DOMParser 在测试环境不可用，抽象出去以便注入 */
-export type ParseHtml = (html: string) => Document | null;
+type ParseHtml = (html: string) => Document | null;
 
-export const domParse: ParseHtml = (html) => {
+const domParse: ParseHtml = (html) => {
   if (typeof DOMParser === 'undefined') return null;
   try {
     return new DOMParser().parseFromString(html, 'text/html');

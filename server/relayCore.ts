@@ -1,6 +1,6 @@
 /**
- * 自托管中转服务的核心逻辑（§4.5）。零依赖、无 DOM、纯字符串/JSON 处理：
- * 本机入口在 scripts/relay.mjs，传输层在 server/relayNode.ts（两者都必须用 node:https，见下）。
+ * 抓取中转的核心逻辑（§4.5）。零依赖、无 DOM、纯字符串/JSON 处理：
+ * 唯一运行位置是云上的 node-functions/api/fetch.ts，传输层在本目录的 relayNode.ts（两者都必须用 node:https，见下）。
  *
  * 两道关卡都必须解掉，缺一不可（2026-10 逐条实测）：
  * 1. CORS：浏览器里的 JS 读不到跨域响应体。Node 发请求没有浏览器参与、不受 CORS 约束，
@@ -261,7 +261,7 @@ export interface RelayRequestInput {
 }
 
 export interface RelayEnv {
-  /** 逗号分隔的 Origin 白名单；配了就只回这些源（不配则回 *，本机自用足够） */
+  /** 逗号分隔的 Origin 白名单；配了就只回这些源（不配则回 *，同源调用方无所谓） */
   allowedOrigins?: string;
   /** >0 时允许中间层缓存。默认 0：分享 token 是访问凭证，绝不能被缓存 */
   cacheSeconds?: number;
@@ -269,9 +269,6 @@ export interface RelayEnv {
 
 /**
  * CORS 头（预检与正常响应共用）。
- * `Access-Control-Allow-Private-Network` 是给「云上 https 页面直接调本机 127.0.0.1」那条路用的：
- * Chrome 的 PNA（私有网络访问）会先预检，响应不回这个头就被拦在浏览器里，
- * 不配也不影响本机同源（vite 代理）那条路。
  * methods 由调用方给：中转只读（GET），同步要写（PUT / DELETE），别一视同仁地放开写。
  */
 export function relayCorsHeaders(
@@ -293,7 +290,6 @@ export function relayCorsHeaders(
     'Access-Control-Allow-Origin': allow,
     'Access-Control-Allow-Headers': requestHeaders || 'content-type',
     'Access-Control-Allow-Methods': methods,
-    'Access-Control-Allow-Private-Network': 'true',
     // 回 * 时不随 Origin 变，不能发空的 Vary（会让中间层以为要按源分开存）
     ...(list.length ? { Vary: 'Origin' } : {}),
   };

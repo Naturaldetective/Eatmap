@@ -14,7 +14,7 @@ export interface ClassifyHit {
   where: 'title' | 'desc';
 }
 
-export interface ClassifyResult {
+interface ClassifyResult {
   category: Category;
   /** 0~1，供 UI 标记是否需复核 */
   confidence: number;

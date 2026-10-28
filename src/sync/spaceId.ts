@@ -6,7 +6,7 @@
  *
  * 不放 cloud.ts 里是因为那边 import 了 IndexedDB 层，服务端测试环境不该拖进 idb。
  */
-export const SPACE_ID_LEN = 16;
+const SPACE_ID_LEN = 16;
 
 /** sha256(utf8) 的十六进制前 16 位 */
 export async function spaceIdOf(passphrase: string): Promise<string> {

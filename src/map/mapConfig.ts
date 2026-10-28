@@ -26,7 +26,7 @@ export function bubbleSize(total: number): number {
   return Math.min(64, Math.round(24 + Math.log2(total) * 8));
 }
 
-export type BubbleKind = 'food' | 'travel' | 'mixed';
+type BubbleKind = 'food' | 'travel' | 'mixed';
 
 /**
  * 按吃/玩数量定主色（§6.1）。不再往气泡里塞 emoji：

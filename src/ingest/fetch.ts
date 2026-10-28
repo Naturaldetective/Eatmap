@@ -2,7 +2,7 @@ import { CORS_PROXIES, FETCH_TIMEOUT } from './proxies';
 import type { CorsProxy } from './proxies';
 import type { VideoMeta } from './extract';
 
-export interface FetchHtmlResult {
+interface FetchHtmlResult {
   /** metaJson 通道不回 HTML（为空串） */
   html: string;
   /** 实际成功的通道名；'direct' 或代理名（§4.3 降级链） */
@@ -11,7 +11,7 @@ export interface FetchHtmlResult {
   meta?: VideoMeta;
 }
 
-export class AllChannelsFailedError extends Error {
+class AllChannelsFailedError extends Error {
   constructor(public attempts: { via: string; error: string }[]) {
     super('所有抓取通道均失败：' + attempts.map((a) => `${a.via}(${a.error})`).join('、'));
     this.name = 'AllChannelsFailedError';

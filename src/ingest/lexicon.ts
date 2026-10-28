@@ -1,5 +1,3 @@
-import type { Category } from '../db/schema';
-
 /**
  * 吃/玩分类词表（§5.2）。strong=权重3，weak=权重1。
  * 这是持续迭代处：M6 用真实误判样本回灌这里的词。
@@ -43,6 +41,3 @@ export const MIN_SCORE_GAP = 2;
 
 /** 「都很高」阈值：两侧得分均 ≥ 此值时，混合视频按 FOOD_FIRST 偏向吃 */
 export const BOTH_HIGH = 4;
-
-export type Weight = Pick<Lexicon['food'], 'strong' | 'weak'>;
-export type { Category };

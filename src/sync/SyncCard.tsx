@@ -6,12 +6,11 @@ import { useEffect, useState } from 'react';
 import Icon from '../ui/Icon';
 import {
   changePassphrase,
+  clearPassphrase,
   getPassphrase,
-  getSyncBaseUrl,
   getSyncStatus,
   newPassphrase,
   setAutoSync,
-  setSyncBaseUrl,
   spaceIdOf,
   subscribeSync,
   syncNow,
@@ -24,7 +23,6 @@ export default function SyncCard() {
   const [shown, setShown] = useState(false);
   const [spaceId, setSpaceId] = useState('');
   const [deleteOld, setDeleteOld] = useState(true);
-  const [endpoint, setEndpoint] = useState(() => getSyncBaseUrl());
   const [err, setErr] = useState('');
 
   useEffect(() => subscribeSync(setSt), []);
@@ -44,9 +42,10 @@ export default function SyncCard() {
     setErr('');
     try {
       if (pass.trim()) await changePassphrase(pass, { deleteOld });
-      else setSt(await syncNow());
+      else await clearPassphrase();
+      setSpaceId('');
       const p = getPassphrase();
-      setSpaceId(p ? await spaceIdOf(p) : '');
+      if (p) setSpaceId(await spaceIdOf(p));
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     }
@@ -107,6 +106,7 @@ export default function SyncCard() {
         >
           {saved && dirty ? '迁移到新口令' : '保存并同步'}
         </button>
+        {!pass.trim() && saved && <span className="text-[11px] text-ink-3">清空口令并保存 = 关闭同步（云上那份不动）</span>}
         <label className="flex shrink-0 items-center gap-1.5 text-ink-3">
           <input
             type="checkbox"
@@ -118,41 +118,12 @@ export default function SyncCard() {
         </label>
       </div>
 
-      {/* 接口地址 */}
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        <input
-          value={endpoint}
-          onChange={(e) => setEndpoint(e.target.value)}
-          placeholder="默认 /api/data，可填已部署的同步地址"
-          className="kd-input w-64 !px-2 !py-1 font-mono text-[11.5px]"
-        />
-        <button
-          onClick={() => {
-            setSyncBaseUrl('');
-            setEndpoint(getSyncBaseUrl());
-          }}
-          className="kd-btn kd-btn-ghost !px-2.5 !py-1 text-[12px]"
-        >
-          恢复默认
-        </button>
-        <button
-          onClick={() => {
-            if (endpoint.trim()) setSyncBaseUrl(endpoint);
-            setEndpoint(getSyncBaseUrl());
-            void syncNow();
-          }}
-          className="kd-btn kd-btn-ghost !px-2.5 !py-1 text-[12px]"
-        >
-          保存地址
-        </button>
-      </div>
-
       {err && <p className="mt-2 text-danger">{err}</p>}
 
       <p className="mt-2 leading-relaxed text-ink-3">
         口令决定数据存在云上哪个空间（线上只传它的哈希，不传原文）。换设备时填同一个口令就拉到同一份数据；
         改口令会把旧空间的数据合并到本地再推到新空间，勾选「删旧空间」同时清掉旧快照。
-        本地 IndexedDB 始终是主存储，同步失败也不影响浏览，恢复默认地址即可退回纯本地模式。
+        本地 IndexedDB 始终是主存储，同步失败也不影响浏览；清空口令并保存就退回纯本地模式。
       </p>
       <p className="mt-1 flex items-start gap-1.5 leading-relaxed text-ink-3">
         <Icon name="alert" className="mt-0.5 h-3.5 w-3.5 shrink-0" />

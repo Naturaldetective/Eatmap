@@ -7,7 +7,6 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "test": "vitest run",
-    "relay": "node scripts/relay.mjs",
     "preview": "vite preview"
   },
   "dependencies": {

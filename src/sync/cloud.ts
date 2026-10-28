@@ -17,9 +17,9 @@ import { spaceIdOf } from './spaceId';
 import type { CloudSnapshot } from './merge';
 
 const LS_PASS = 'eatmap.spacePass';
-const LS_URL = 'eatmap.syncUrl';
 const LS_AUTO = 'eatmap.syncAuto';
-const DEFAULT_PATH = '/api/data';
+/** 同步函数的路由路径（与 node-functions/api/data.ts 同名）：同源，不需要也不能配 */
+const SYNC_PATH = '/api/data';
 /** 409 之后的重试次数：两次都撞说明有设备在疯狂写，再撞下去只是耗流量 */
 const MAX_RETRY = 2;
 const PUSH_DEBOUNCE_MS = 1500;
@@ -86,16 +86,7 @@ export function getPassphrase(): string {
   return lsGet(LS_PASS);
 }
 
-export function getSyncBaseUrl(): string {
-  return (lsGet(LS_URL) || DEFAULT_PATH).trim().replace(/\/+$/, '');
-}
-
-export function setSyncBaseUrl(v: string): string {
-  lsSet(LS_URL, v.trim() || null);
-  return getSyncBaseUrl();
-}
-
-export function isAutoSync(): boolean {
+function isAutoSync(): boolean {
   const v = lsGet(LS_AUTO);
   return v === '' ? true : v === '1';
 }
@@ -125,7 +116,7 @@ interface SyncEnvelope {
 
 async function callSync(spaceId: string, init?: RequestInit & { query?: Record<string, string> }): Promise<SyncEnvelope> {
   const q = new URLSearchParams({ space: spaceId, ...(init?.query ?? {}) });
-  const res = await fetch(`${getSyncBaseUrl()}?${q}`, {
+  const res = await fetch(`${SYNC_PATH}?${q}`, {
     ...init,
     headers: { 'Content-Type': 'application/json', ...(init?.headers ?? {}) },
   });
@@ -274,8 +265,13 @@ export async function changePassphrase(next: string, opts: { deleteOld?: boolean
   return status;
 }
 
-/** 首次设置口令（不迁移，直接以当前本地数据建立空间） */
-export async function setPassphrase(pass: string): Promise<SyncStatus> {
-  return changePassphrase(pass);
+/**
+ * 关闭同步：只抹掉本机口令与同步游标，云上那份快照原样留着
+ * （换设备/重新填回口令还能拉回来；要连云上那份一起抹，用 changePassphrase 的「删旧空间」）。
+ */
+export async function clearPassphrase(): Promise<SyncStatus> {
+  lsSet(LS_PASS, null);
+  await resetSyncState();
+  return publish({ configured: false, running: false, ok: false, spaceId: '', rev: 0, detail: '已关闭同步，数据只在本浏览器' });
 }
 

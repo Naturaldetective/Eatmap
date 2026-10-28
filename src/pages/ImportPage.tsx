@@ -6,12 +6,11 @@ import { detectPlatform, normalizeUrl, parseShareText, splitLinks } from '../ing
 import type { LinkHit } from '../ingest/parse';
 import { buildPickScript, parsePickList, parsePickResult } from '../ingest/pick';
 import { fetchPageHtml } from '../ingest/fetch';
-import { pingRelay, relayBaseUrl, setRelayBaseUrl } from '../ingest/relay';
+import { pingRelay, RELAY_FETCH_PATH } from '../ingest/relay';
 import type { RelayHealth } from '../ingest/relay';
 import { extractMeta, hasUsableMeta } from '../ingest/extract';
 import type { VideoMeta } from '../ingest/extract';
 import { RATE_LIMIT_MS } from '../ingest/proxies';
-import { RELAY_DEFAULT_PATH } from '../ingest/relay';
 import { buildDictionary, detectCity } from '../ingest/geo';
 import type { GeoCandidate } from '../ingest/geo';
 import { classify } from '../ingest/classify';
@@ -74,7 +73,7 @@ function toEntry(hit: LinkHit, meta?: VideoMeta): Entry {
  * 智能解析粘贴内容，优先级：取词 JSON > 分享文案（带标题，免抓取）> 纯链接（需抓取）。
  * 三条路径都保留带 token 的原地址，保证后续「重试抓取」还能拿到正文。
  */
-export function extractEntries(text: string): Entry[] {
+function extractEntries(text: string): Entry[] {
   const picked = parsePickList(text);
   const withUrl = picked.filter((m) => m.url && detectPlatform(m.url));
   if (withUrl.length) {
@@ -161,7 +160,7 @@ export default function ImportPage() {
     } catch (e) {
       patchRow(row.id, {
         status: 'failed',
-        message: (e instanceof Error ? e.message : String(e)) + '（中转与各通道不可达：本机中转未启动可运行 npm run relay，或改用取词脚本、手动录入）',
+        message: (e instanceof Error ? e.message : String(e)) + '（中转与备用通道均不可达：可改用取词脚本或手动录入）',
       });
     }
   }
@@ -417,19 +416,16 @@ function RowEditor(p: EditorProps) {
 }
 
 /**
- * 中转服务状态灯 + 地址入口（§4.5）。
- * 本机：先跑 npm run relay，地址留空走 vite 代理；部署后：填公网地址，存 localStorage 长期使用。
+ * 中转服务状态灯（§4.5）。地址写死同源 /api/fetch（云上 node-functions 提供），
+ * 本机 dev 上这个路径不存在，灯会是红的 —— 抓取自动降级，不阻塞开发。
  */
 function RelayBar() {
-  const [base, setBase] = useState(() => relayBaseUrl());
-  const [draft, setDraft] = useState('');
   const [health, setHealth] = useState<RelayHealth | null>(null);
   const [busy, setBusy] = useState(false);
 
   async function check() {
     setBusy(true);
     setHealth(await pingRelay());
-    setBase(relayBaseUrl());
     setBusy(false);
   }
 
@@ -445,40 +441,19 @@ function RelayBar() {
       <span className="shrink-0 font-medium text-ink-2">中转服务</span>
       <span className="min-w-0 flex-1 truncate text-ink-3" title={health?.detail}>
         {busy ? '检测中…' : health ? `${health.detail} · ${health.ms}ms` : '未检测'}
-        <span className="ml-1.5 font-mono text-[11px]">{base}</span>
+        <span className="ml-1.5 font-mono text-[11px]">{RELAY_FETCH_PATH}</span>
       </span>
-      <input
-        value={draft}
-        onChange={(e) => setDraft(e.target.value)}
-        placeholder={base === RELAY_DEFAULT_PATH ? '默认 /api/fetch，可填中转地址' : base}
-        className="kd-input w-52 !px-2 !py-1 font-mono text-[11.5px]"
-      />
       <button
-        onClick={() => {
-          setRelayBaseUrl('');
-          setDraft('');
-          void check();
-        }}
+        onClick={() => void check()}
+        disabled={busy}
         className="kd-btn kd-btn-ghost !px-2.5 !py-1 text-[12px]"
       >
-        恢复默认
-      </button>
-      <button
-        onClick={() => {
-          if (draft.trim()) setRelayBaseUrl(draft);
-          setDraft('');
-          void check();
-        }}
-        disabled={busy}
-        className="kd-btn kd-btn-primary !px-2.5 !py-1 text-[12px]"
-      >
-        {draft.trim() ? '保存并测试' : '重新检测'}
+        重新检测
       </button>
       <p className="w-full leading-relaxed text-ink-3">
-        本机跑 npm run relay（监听 127.0.0.1:8787）：本地开发地址留空即可（vite 已代理）；
-        部署到线上后，在这个站点里填 http://127.0.0.1:8787/api/fetch 也能用（中转得开着）。
-        纯静态托管站自身没有 /api/fetch，会被回退成首页——那种情况下灯是红的，
-        抓取自动降级 r.jina.ai → 公共代理 → 分享文案粘贴。
+        中转是站点自己的函数（与页面同源），部署在 EdgeOne Pages 上就有。
+        灯红了只有两种情况：本地 dev（本机没有这个函数，属正常），或者站点没部署过函数
+        —— 那种情况下抓取自动降级 r.jina.ai → 公共代理 → 分享文案粘贴。
       </p>
     </div>
   );

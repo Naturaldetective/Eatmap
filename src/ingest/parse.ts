@@ -15,7 +15,7 @@ const PLATFORM_PATTERNS: { platform: Platform; match: RegExp; short?: RegExp }[]
   },
 ];
 
-export interface ParsedLink {
+interface ParsedLink {
   platform: Platform;
   /** 是否短链（需要跟随重定向解析真实地址） */
   isShort: boolean;
@@ -94,26 +94,6 @@ export function splitLinks(text: string): LinkHit[] {
     }
   }
   return out;
-}
-
-/**
- * 旧签名：返回可直接抓取/入库的地址。实测不兼容之处：去 token 的 norm 只能用于去重，
- * 一旦拿去抓取必被踢到 /404，所以这里返回带 token 的 raw（入库前由调用方再规范化）。
- */
-export function splitLines(text: string): string[] {
-  return splitLinks(text).map((l) => l.raw);
-}
-
-/**
- * 分享链的 xsec_token 来自哪个端（仅作诊断/文案提示用，不影响能不能抓取）：
- * 曾以为 app 端在 web 上强制登录，实测证实为误判 —— pc_share 与 app_share 在中转里都能拿到正文，
- * 真门槛是请求头（见 server/relayCore.ts 顶部）。唯一区别：未登录时浏览器直接导航 app_share 长链会踢 /login。
- */
-export function shareSource(rawUrl: string): 'pc' | 'app' | 'unknown' {
-  const src = (rawUrl.match(/[?&]xsec_source=([^&#]*)/i)?.[1] ?? '').toLowerCase();
-  if (src.startsWith('pc')) return 'pc';
-  if (src) return 'app';
-  return 'unknown';
 }
 
 /**

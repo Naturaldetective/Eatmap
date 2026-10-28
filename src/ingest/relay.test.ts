@@ -1,17 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { RELAY_DEFAULT_PATH, relayEndpoint, relayProbeVerdict } from './relay';
+import { RELAY_FETCH_PATH, relayEndpoint, relayProbeVerdict } from './relay';
 
 describe('中转地址拼接（§4.5）', () => {
-  it('默认走同源 /api/fetch（开发由 vite 代理转给本机中转）', () => {
+  it('路径写死同源 /api/fetch（必须与 node-functions/api/fetch.ts 的路由同名）', () => {
+    expect(RELAY_FETCH_PATH).toBe('/api/fetch');
     expect(relayEndpoint('https://www.xiaohongshu.com/explore/abc')).toBe(
-      `${RELAY_DEFAULT_PATH}?url=${encodeURIComponent('https://www.xiaohongshu.com/explore/abc')}&format=meta`,
+      `${RELAY_FETCH_PATH}?url=${encodeURIComponent('https://www.xiaohongshu.com/explore/abc')}&format=meta`,
     );
   });
 
   it('token 里的 = 与 & 必须整体编码，否则会被中转当成自己的 query 吃掉', () => {
     const raw = 'https://www.xiaohongshu.com/explore/abc?xsec_token=CB123=&xsec_source=app_share&type=video';
     const ep = relayEndpoint(raw);
-    const q = new URLSearchParams(ep.slice(RELAY_DEFAULT_PATH.length + 1));
+    const q = new URLSearchParams(ep.slice(RELAY_FETCH_PATH.length + 1));
     expect(q.get('url')).toBe(raw);
     expect(q.get('format')).toBe('meta');
   });

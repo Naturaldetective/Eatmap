@@ -5,7 +5,7 @@
  * edge-functions 是 V8/Service-Worker 运行时，只有 Web `fetch`，而我们已经实测过
  * 「非浏览器 fetch 客户端拿不到小红书正文」——undici 把 header 名全小写、顺序固定，
  * 平台按请求指纹判定，同一组头只回 36KB 空壳。node-functions 是真 Node.js 运行时，
- * 可以直接用 server/relayNode.ts 里那套 `node:https`（实测给 70KB 正文），逻辑与本机完全一致。
+ * 可以直接用 server/relayNode.ts 里那套 `node:https`（实测给 70KB 正文）。
  *
  * 路由：本文件 → `https://<站点>/api/fetch`。函数路由优先于静态资源，
  * 所以不会再被 SPA 回退吞成 index.html（那正是云上那盏假绿灯的成因）。
@@ -42,7 +42,7 @@ export async function onRequest(context: FunctionContext): Promise<Response> {
   const env = readEnv(context.env);
   const origin = request.headers.get('origin') ?? undefined;
 
-  // 预检：与正常响应同一套头（含 Access-Control-Allow-Private-Network）
+  // 预检：与正常响应同一套头（同源调用方其实用不上，放开是为允许别的站点直接复用这一跳）
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       status: 204,
