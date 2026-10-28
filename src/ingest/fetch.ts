@@ -50,7 +50,18 @@ interface RelayJson {
 
 /** metaJson 通道：拿不到可用标题就当这一跳失败，继续降级 */
 function toVideoMeta(text: string): VideoMeta {
-  const j = JSON.parse(text) as RelayJson;
+  let j: RelayJson;
+  try {
+    j = JSON.parse(text) as RelayJson;
+  } catch {
+    // 静态托管站没部署中转时，/api/fetch 会被 SPA 回退成 index.html（还带 200）；
+    // 不区分开的话，降级原因会被记成一句看不懂的 JSON 解析错。
+    throw new Error(
+      /^\s*</.test(text)
+        ? '这个站点上没有中转（/api/fetch 被回退成了网页）'
+        : '中转响应不是合法 JSON',
+    );
+  }
   if (!j.ok || !j.meta?.title) throw new Error(j.error || '中转未返回正文');
   return { title: j.meta.title, desc: j.meta.desc ?? '', ...(j.meta.cover ? { cover: j.meta.cover } : {}) };
 }

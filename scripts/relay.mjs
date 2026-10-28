@@ -14,7 +14,9 @@
  */
 import { createServer } from 'node:http';
 
-const { handleRelayRequest } = await import(new URL('../server/relayCore.ts', import.meta.url).href);
+const { handleRelayRequest, relayCorsHeaders } = await import(
+  new URL('../server/relayCore.ts', import.meta.url).href
+);
 const { nodePageFetcher } = await import(new URL('../server/relayNode.ts', import.meta.url).href);
 
 const PORT = Number(process.env.RELAY_PORT || 8787);
@@ -38,11 +40,8 @@ const server = createServer(async (req, res) => {
   const x = new URL(req.url, `http://${req.headers.host}`);
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, {
-      'Access-Control-Allow-Origin': ENV.allowedOrigins.split(',')[0]?.trim() || '*',
-      'Access-Control-Allow-Methods': 'GET, OPTIONS',
-      'Access-Control-Allow-Headers': 'content-type',
-    });
+    // 预检走同一套头（含 PNA），否则云上 https 页面调本机这一跳会被 Chrome 拦下
+    res.writeHead(204, relayCorsHeaders(req.headers.origin, ENV, req.headers['access-control-request-headers']));
     res.end();
     return;
   }
@@ -84,5 +83,6 @@ const server = createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`EatMap 中转已启动 http://${HOST}:${PORT}/api/fetch`);
   console.log('健康检查：curl "http://' + HOST + ':' + PORT + '/"');
+  console.log('云上页面也能直接用它：导入页「中转地址」填 http://' + HOST + ':' + PORT + '/api/fetch');
   console.log('停止：Ctrl-C（只监听本机，不对外暴露）');
 });

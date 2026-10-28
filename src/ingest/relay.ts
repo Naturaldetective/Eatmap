@@ -59,6 +59,33 @@ export interface RelayHealth {
   detail: string;
 }
 
+/** 中转自己的信封长什么样：JSON 且带布尔 ok（字段定义见 server/relayCore.ts） */
+function isRelayEnvelope(text: string): boolean {
+  const t = text.trim();
+  if (!t.startsWith('{')) return false;
+  try {
+    return typeof (JSON.parse(t) as { ok?: unknown }).ok === 'boolean';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * 探活判定。不能只看 HTTP 状态码：纯静态托管（EdgeOne Pages / Vercel 的 SPA rewrite）
+ * 会把任意未知路径回退成 index.html 并给 200，「200 就算活着」会把
+ * 「这个站点上根本没有中转」报成绿灯（实测：云上导入页显示「应答 200 · 111ms」，回的是首页 HTML）。
+ * 只认中转自己的 JSON 信封；400/502 只要信封在就算活（探活地址本来就取不到正文）。
+ */
+export function relayProbeVerdict(status: number, text: string): { ok: boolean; detail: string } {
+  if (!isRelayEnvelope(text)) {
+    const why = /^\s*</.test(text)
+      ? '回的是网页——这个站点上没有部署中转（路径被回退成了首页）'
+      : '回的不是中转的 JSON 信封';
+    return { ok: false, detail: `应答 ${status}，但${why}` };
+  }
+  return { ok: true, detail: `应答 ${status}` };
+}
+
 /** 导入页的状态灯：拿一条不存在的白名单地址探活，只看服务是否应答（不消耗真实笔记） */
 export async function pingRelay(timeoutMs = 4000): Promise<RelayHealth> {
   const t0 = Date.now();
@@ -69,10 +96,8 @@ export async function pingRelay(timeoutMs = 4000): Promise<RelayHealth> {
       signal: ac.signal,
     });
     const text = await res.text();
-    // 400/502 都算「服务活着」：请求进了中转、只是这条探活地址取不到正文
-    const alive = res.status === 200 || res.status === 400 || res.status === 502;
-    if (!alive) return { ok: false, ms: Date.now() - t0, detail: `HTTP ${res.status} ${text.slice(0, 60)}` };
-    return { ok: true, ms: Date.now() - t0, detail: `应答 ${res.status}` };
+    const v = relayProbeVerdict(res.status, text);
+    return { ok: v.ok, ms: Date.now() - t0, detail: v.detail };
   } catch (e) {
     return { ok: false, ms: Date.now() - t0, detail: e instanceof Error ? e.message : String(e) };
   } finally {

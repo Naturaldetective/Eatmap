@@ -210,11 +210,36 @@ interface CityRecord {
 - `Access-Control-Allow-Origin` 默认 `*`（本机自用）；设 `RELAY_ALLOWED_ORIGINS` 后精确回源 + `Vary: Origin`。
 
 前端侧（`src/ingest/relay.ts`）地址优先级：导入页手填（localStorage）> `VITE_RELAY_URL` > 默认 `/api/fetch`。
-`RelayBar` 拿一条不存在的白名单地址探活，200/400/502 都算「服务活着」（绿灯），只有连不通才红。
+`RelayBar` 拿一条不存在的白名单地址探活，**只认中转自己的 JSON 信封**（`relayProbeVerdict`）：
+400/502 只要信封在就算活，而「200 + HTML」算死 —— 纯静态托管会把未知路径回退成 `index.html` 并给 200，
+只看状态码会把「站点上根本没中转」报成绿灯（云上实测过：应答 200 · 111ms，回的却是首页）。
+另外中转已回 `Access-Control-Allow-Private-Network: true`，所以云上 https 页面也能直接填 `http://127.0.0.1:8787/api/fetch` 调本机那一跳。
 封面域 `sns-webpic-qc.xhscdn.com` 实测无防盗链（带不带 Referer 都 200），但站内给的是 `http://`，中转已升成 `https://`，否则被混合内容拦截。
 
-> 部署版（Vercel `api/fetch.ts`）**尚未做**：得先把 `vercel.json` 的 SPA rewrite 改成 `/((?!api/).*)`，
-> 否则 `/api/*` 会被吞掉回 `index.html`；且机房出口 IP 会不会被小红书风控也还没验证。
+#### 云上形态：EdgeOne Pages 的 Node Functions
+
+线上部署在 EdgeOne Pages（`*.edgeone.cool`）时，中转放在 **`node-functions/`** 而不是 `edge-functions/`，
+理由就是 §4.3 那条指纹结论：
+
+| 目录 | 运行时 | 能不能拿到正文 |
+|---|---|---|
+| `edge-functions/` | V8 / Service-Worker 风格，**只有 Web `fetch`** | 很可能跟 undici 一样只拿到壳（同一个坑） |
+| `node-functions/` | 真 Node.js，可用 `node:https` 与完整 npm | 能复用已验证的 `server/relayNode.ts` |
+
+接入方式（`node-functions/api/fetch.ts` → 路由 `https://<站点>/api/fetch`）：函数体只做平台适配，
+直接 import 同仓库的 `server/relayCore.ts` 与 `server/relayNode.ts`（**零副本，不漂移**），
+把 `RelayHttpResponse` 转成 `Response`；函数路由优先于静态资源，所以上面那个「被回退成首页」的问题自然消失。
+
+部署与约束：
+
+- 本地调试：`npm i -g edgeone` 后在项目根跑 `edgeone pages dev`（http://localhost:8088）；推送到关联仓库即自动构建发布。
+- 环境变量在 Pages 项目设置里配：`RELAY_ALLOWED_ORIGINS`（建议填站点自己的源，否则默认 `*`）。
+- 域名白名单与「每跳复校」在服务端仍然生效，所以这个公开端点只能拿三个白名单域，不是通用代理。
+- **未验证风险**：机房出口 IP 会不会被小红书风控（本机宽带 IP 已验证可用）；以及平台构建器能不能解析仓库根外的相对 import。
+  上线后第一件事是端到端跑一条带 token 的链接，拿不到就改方案 B（真服务器）。
+
+> 另：Vercel 形态（`api/fetch.ts`）仍未做。它的 SPA rewrite `/(.*)` 会吞掉 `/api/*`，
+> 需先改成 `/((?!api/).*)`；EdgeOne Pages 因为函数路由优先，没这个问题。
 
 ---
 
@@ -363,6 +388,8 @@ eat-map/
 │   ├── collect-cities.mjs    # 城市库采集（§5.1）
 │   ├── build-cities.mjs      # 城市库生成（§5.1）
 │   └── relay.mjs             # 本机中转入口：npm run relay（§4.5）
+├── node-functions/           # 云上形态的中转（EdgeOne Pages Node Functions，§4.5）
+│   └── api/fetch.ts          # → /api/fetch，import 同一套 server/ 代码（零副本）
 ├── server/                   # 浏览器外面那一跳（§4.5）
 │   ├── relayCore.ts          # 中转纯逻辑（零依赖、可单测）
 │   ├── relayNode.ts          # node:https 传输层

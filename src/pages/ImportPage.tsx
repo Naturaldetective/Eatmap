@@ -266,6 +266,12 @@ export default function ImportPage() {
               >
                 {row.url}
               </a>
+              {/* 行内显示的是去 token 的规范地址（用于去重），不标出来会被误读成「链接没带 token」 */}
+              {row.url.includes('xiaohongshu.com') && (
+                <span className="shrink-0 text-[11px] text-ink-3">
+                  {row.fetchUrl ? '原链含 token' : '链接无 token'}
+                </span>
+              )}
               {row.via && <span className="ml-auto shrink-0 text-[11px] text-ink-3">via {row.via}</span>}
             </div>
             {row.message && (
@@ -465,8 +471,10 @@ function RelayBar() {
         {draft.trim() ? '保存并测试' : '重新检测'}
       </button>
       <p className="w-full leading-relaxed text-ink-3">
-        本机跑 npm run relay（监听 127.0.0.1:8787，vite 已代理，地址留空即可）；有已部署的中转就填在后面。
-        连不上时自动降级 r.jina.ai → 公共代理 → 分享文案粘贴。
+        本机跑 npm run relay（监听 127.0.0.1:8787）：本地开发地址留空即可（vite 已代理）；
+        部署到线上后，在这个站点里填 http://127.0.0.1:8787/api/fetch 也能用（中转得开着）。
+        纯静态托管站自身没有 /api/fetch，会被回退成首页——那种情况下灯是红的，
+        抓取自动降级 r.jina.ai → 公共代理 → 分享文案粘贴。
       </p>
     </div>
   );

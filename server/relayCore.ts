@@ -267,7 +267,17 @@ export interface RelayEnv {
   cacheSeconds?: number;
 }
 
-function corsHeaders(origin: string | undefined, env: RelayEnv): Record<string, string> {
+/**
+ * CORS 头（预检与正常响应共用）。
+ * `Access-Control-Allow-Private-Network` 是给「云上 https 页面直接调本机 127.0.0.1」那条路用的：
+ * Chrome 的 PNA（私有网络访问）会先预检，响应不回这个头就被拦在浏览器里，
+ * 不配也不影响本机同源（vite 代理）那条路。
+ */
+export function relayCorsHeaders(
+  origin: string | undefined,
+  env: RelayEnv,
+  requestHeaders?: string,
+): Record<string, string> {
   const list = (env.allowedOrigins ?? '')
     .split(',')
     .map((s) => s.trim())
@@ -279,10 +289,16 @@ function corsHeaders(origin: string | undefined, env: RelayEnv): Record<string, 
     : '*';
   return {
     'Access-Control-Allow-Origin': allow,
-    'Access-Control-Allow-Headers': 'content-type',
+    'Access-Control-Allow-Headers': requestHeaders || 'content-type',
     'Access-Control-Allow-Methods': 'GET, OPTIONS',
-    Vary: list.length ? 'Origin' : '',
+    'Access-Control-Allow-Private-Network': 'true',
+    // 回 * 时不随 Origin 变，不能发空的 Vary（会让中间层以为要按源分开存）
+    ...(list.length ? { Vary: 'Origin' } : {}),
   };
+}
+
+function corsHeaders(origin: string | undefined, env: RelayEnv): Record<string, string> {
+  return relayCorsHeaders(origin, env);
 }
 
 /** 一次请求的全部逻辑：校验 → 代跑 → 解析 → 打包成 HTTP 响应 */
