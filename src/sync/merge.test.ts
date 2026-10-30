@@ -133,3 +133,34 @@ describe('打包与指纹', () => {
   });
 });
 
+describe('旅记点亮跟着记录走（§6.6：不给它单开一条同步通道）', () => {
+  it('本地已点亮 + 云端是没点亮的旧版 → 本地不动，点亮不丢', () => {
+    const r = mergeState({
+      local: [video({ updatedAt: 900, visitedAt: 880 })],
+      remote: cloud([video({ updatedAt: 500, title: '云端改过' })]),
+      localDeleted: [],
+    });
+    expect(r.upsert).toHaveLength(0);
+  });
+
+  it('云端点亮得更晚 → 本地采纳，visitedAt 一并带回来', () => {
+    const r = mergeState({
+      local: [video({ updatedAt: 300 })],
+      remote: cloud([video({ updatedAt: 900, visitedAt: 880 })]),
+      localDeleted: [],
+    });
+    expect(r.upsert).toEqual([expect.objectContaining({ visitedAt: 880 })]);
+  });
+
+  it('快照不筛字段：visitedAt 原样进快照，也就不需要升 version', () => {
+    const body = buildSnapshot([video({ visitedAt: 880 })], []);
+    expect(body.videos[0].visitedAt).toBe(880);
+  });
+
+  it('点亮会改变指纹：不然这一推直接被指纹比对拦下', () => {
+    expect(fingerprintOf([video({ updatedAt: 11, visitedAt: 11 })], [])).not.toBe(
+      fingerprintOf([video({ updatedAt: 10 })], []),
+    );
+  });
+});
+

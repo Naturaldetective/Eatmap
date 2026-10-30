@@ -25,6 +25,12 @@ export interface VideoRecord {
   note?: string;
   /** 最后一次人工修改时间（§4.6 合并时比这个判谁赢；缺省视为等于 parsedAt） */
   updatedAt?: number;
+  /**
+   * 「我去过这里」的点亮时刻（§6.6）。缺省 = 未点亮。
+   * 只记在记录上，城市级的「去过」完全由它派生（见 listVisitedCities）——
+   * 不另开一张表，是为了不让「记录删了但城市还亮着」这种脏状态有可能出现。
+   */
+  visitedAt?: number;
 }
 
 /** 删除标记（§4.6）：不记这个的话，本地删掉的记录下次拉取会从云上原样复活 */

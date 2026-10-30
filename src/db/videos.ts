@@ -116,6 +116,57 @@ export async function getRanking(): Promise<(CityCount & { score: number })[]> {
     .sort((a, b) => b.score - a.score || b.total - a.total);
 }
 
+/**
+ * 点亮 / 取消点亮「我去过这里」（§6.6）。
+ * 必须走 updateVideo：它会把 updatedAt 顶到当前时刻，而跨设备合并就按 updatedAt 定胜负（§4.6）。
+ * 不顶的话，这次点亮会被云上那份「更晚改过但没点亮」的同 id 记录覆盖回去，用户只会觉得点亮又自己丢了。
+ */
+export async function setVideoVisited(id: string, on: boolean): Promise<VideoRecord> {
+  return updateVideo({ id, visitedAt: on ? Date.now() : undefined });
+}
+
+/** 已点亮的记录：visitedAt 必有值，调用方就不用一路判空 / 非空断言 */
+export type VisitedRecord = VideoRecord & { visitedAt: number };
+
+/** 「算不算点亮过」只认这一处：库里取记录与抽屉本地过滤共用同一个判定 */
+export const isVisited = (v: VideoRecord): v is VisitedRecord =>
+  typeof v.visitedAt === 'number' && v.visitedAt > 0;
+
+/**
+ * 点亮过的记录。未识别到城市（'unknown'）的也在内：它们落不到任何色块上，
+ * 由下游的 adcodeOf / visitedCitiesOf 各自跳过，不在这里反复筛两道。
+ */
+export async function listVisitedRecords(): Promise<VisitedRecord[]> {
+  const db = await getDB();
+  return (await db.getAll('videos')).filter(isVisited);
+}
+
+export interface VisitedCity {
+  cityCode: string;
+  /** 首次点亮的时刻：城市「去过」的起点 */
+  firstAt: number;
+  /** 该城已点亮的记录条数 */
+  count: number;
+}
+
+/**
+ * 城市级「去过」（纯函数，不落库，§3.3）：任一记录点亮就算去过，日期取最早那次。
+ * 'unknown' 不进结果（没定位到城市的记录点亮不了地图上的块）。
+ */
+export function visitedCitiesOf(rows: readonly VisitedRecord[]): VisitedCity[] {
+  const map = new Map<string, VisitedCity>();
+  for (const v of rows) {
+    if (v.cityCode === 'unknown') continue;
+    const cur = map.get(v.cityCode);
+    if (!cur) map.set(v.cityCode, { cityCode: v.cityCode, firstAt: v.visitedAt, count: 1 });
+    else {
+      cur.firstAt = Math.min(cur.firstAt, v.visitedAt);
+      cur.count += 1;
+    }
+  }
+  return [...map.values()].sort((a, b) => a.firstAt - b.firstAt);
+}
+
 /** ============ 导出 / 导入 JSON 备份（§3.4，数据页在 M5 接入 UI） ============ */
 
 export interface BackupFile {

@@ -67,6 +67,10 @@ body {
 .map-tiles {
   filter: saturate(0.62) contrast(0.9) brightness(1.03);
 }
+/* 旅记页不挂瓦片，容器底色就是「纸」：块与外的对比全靠填充色本身（§6.6） */
+.journal-map.leaflet-container {
+  background: var(--color-canvas);
+}
 .leaflet-control-attribution {
   font-size: 10px !important;
   padding: 1px 6px !important;

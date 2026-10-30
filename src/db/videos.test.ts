@@ -10,9 +10,12 @@ import {
   getVideoByUrl,
   importVideos,
   listVideos,
+  listVisitedRecords,
   seedCities,
+  setVideoVisited,
   updateVideo,
   videoScore,
+  visitedCitiesOf,
   getAllCities,
   getDB,
   type AddResult,
@@ -170,5 +173,73 @@ describe('eatmap 数据层（M1）', () => {
     await deleteVideo(video.id);
     const after = (await countByCity()).find((c) => c.cityCode === '440100');
     expect(after?.total ?? 0).toBe(before.total - 1);
+  });
+});
+
+describe('旅记点亮（§6.6）', () => {
+  async function resetVideos() {
+    const db = await getDB();
+    const tx = db.transaction('videos', 'readwrite');
+    await tx.store.clear();
+    await tx.done;
+  }
+
+  it('点亮会顶高 updatedAt：不然跨设备合并会把这次点亮洗掉', async () => {
+    await resetVideos();
+    const v = await addOk({ cityCode: '510100' });
+    expect(v.visitedAt).toBeUndefined();
+    const lit = await setVideoVisited(v.id, true);
+    const at = lit.visitedAt ?? 0;
+    expect(at).toBeGreaterThan(0);
+    expect(lit.updatedAt ?? 0).toBeGreaterThanOrEqual(at);
+    expect((await getVideoByUrl(v.url))?.visitedAt).toBe(at);
+  });
+
+  it('取消点亮：visitedAt 清空，记录本身不丢', async () => {
+    await resetVideos();
+    const v = await addOk({ cityCode: '510100', title: '火锅' });
+    await setVideoVisited(v.id, true);
+    const off = await setVideoVisited(v.id, false);
+    expect(off.visitedAt).toBeUndefined();
+    expect(off.title).toBe('火锅');
+    expect(await listVisitedRecords()).toEqual([]);
+  });
+
+  it('重复点亮刷新日期：已亮着再按一次不报错也不堆历史', async () => {
+    await resetVideos();
+    const v = await addOk();
+    const first = await setVideoVisited(v.id, true);
+    const second = await setVideoVisited(v.id, true);
+    expect(second.visitedAt ?? 0).toBeGreaterThanOrEqual(first.visitedAt ?? 0);
+    expect(await listVisitedRecords()).toHaveLength(1);
+  });
+
+  it('任一记录点亮就算城去过，firstAt 取最早，次数累计', async () => {
+    await resetVideos();
+    await setVideoVisited((await addOk({ cityCode: '510100' })).id, true);
+    await setVideoVisited((await addOk({ cityCode: '510100', category: 'travel' })).id, true);
+    const cd = await addOk({ cityCode: '510100' });
+    await setVideoVisited(cd.id, true);
+    await setVideoVisited((await addOk({ cityCode: '440100' })).id, true);
+    await setVideoVisited((await addOk({ cityCode: 'unknown', category: 'unknown' })).id, true);
+
+    const cities = visitedCitiesOf(await listVisitedRecords());
+    // 'unknown' 不进气泡也不进色块，但 listVisitedRecords 负责把它交给调用方
+    expect((await listVisitedRecords()).some((r) => r.cityCode === 'unknown')).toBe(true);
+    expect(cities.find((c) => c.cityCode === 'unknown')).toBeUndefined();
+    expect(cities).toHaveLength(2);
+    expect(cities.find((c) => c.cityCode === '510100')!.count).toBe(3);
+    expect(cities.find((c) => c.cityCode === '440100')!.count).toBe(1);
+    // 结果按 firstAt 正序（同一毫秒内点亮两座城时不比谁先，只保证不乱序）
+    expect(cities[0].firstAt).toBeLessThanOrEqual(cities[1].firstAt);
+  });
+
+  it('只改一条的点亮不影响同城其他记录', async () => {
+    await resetVideos();
+    const a = await addOk({ cityCode: '510100' });
+    const b = await addOk({ cityCode: '510100' });
+    await setVideoVisited(a.id, true);
+    expect((await getVideoByUrl(b.url))?.visitedAt).toBeUndefined();
+    expect(visitedCitiesOf(await listVisitedRecords())[0].count).toBe(1);
   });
 });

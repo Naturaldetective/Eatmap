@@ -1,6 +1,7 @@
 import { NavLink, Route, Routes } from 'react-router-dom';
 import { useEffect } from 'react';
 import MapPage from './pages/MapPage';
+import JournalPage from './pages/JournalPage';
 import ImportPage from './pages/ImportPage';
 import RankingPage from './pages/RankingPage';
 import DataPage from './pages/DataPage';
@@ -11,6 +12,7 @@ import type { IconName } from './ui/Icon';
 
 const NAV_ITEMS: { to: string; label: string; icon: IconName }[] = [
   { to: '/', label: '地图', icon: 'map' },
+  { to: '/journal', label: '旅记', icon: 'flag' },
   { to: '/import', label: '导入', icon: 'inbox' },
   { to: '/ranking', label: '推荐', icon: 'ranking' },
   { to: '/data', label: '数据', icon: 'data' },
@@ -51,6 +53,7 @@ export default function App() {
       <main className="min-h-0 flex-1">
         <Routes>
           <Route path="/" element={<MapPage />} />
+          <Route path="/journal" element={<JournalPage />} />
           <Route path="/import" element={<ImportPage />} />
           <Route path="/ranking" element={<RankingPage />} />
           <Route path="/data" element={<DataPage />} />

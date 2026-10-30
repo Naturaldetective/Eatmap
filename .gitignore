@@ -12,6 +12,9 @@ dist
 dist-ssr
 *.local
 
+# 采集脚本的原始响应缓存（3.7MB，可由 node scripts/build-china-geo.mjs 重新拉）
+scripts/.china_geo_raw/
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
