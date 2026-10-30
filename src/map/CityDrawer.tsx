@@ -3,6 +3,7 @@ import { listVideos } from '../db/videos';
 import type { VideoRecord } from '../db/schema';
 import type { CityRecord } from '../db/schema';
 import type { Category } from '../db/schema';
+import CityWeather from '../weather/CityWeather';
 import Icon from '../ui/Icon';
 
 interface Props {
@@ -47,6 +48,8 @@ export default function CityDrawer({ city, category, onClose }: Props) {
       </header>
 
       <div className="min-h-0 flex-1 overflow-y-auto p-2.5">
+        {/* 天气跟着列表一起滚：列表一长就不该让它常驻占掉一百像素 */}
+        <CityWeather city={city} />
         {videos === null && <p className="p-6 text-center text-[13px] text-ink-3">加载中…</p>}
         {videos?.length === 0 && (
           <p className="p-6 text-center text-[13px] text-ink-3">该筛选下暂无视频</p>
